@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { useAuth } from '../contexts/AuthContext'
@@ -14,10 +14,53 @@ import {
   Calendar,
   Activity
 } from 'lucide-react'
+import { collection, getDocs, orderBy, query, where } from 'firebase/firestore'
+import { db } from '../lib/firebase'
+import { calculateGCContent } from '../utils/bioinformatics'
+
+interface UserSequence {
+  id: string
+  sequence: string
+  type: 'dna' | 'rna' | 'protein'
+  createdAt: Date
+  gc?: number
+}
 
 const Dashboard: React.FC = () => {
-  const { userProfile } = useAuth()
+  const { userProfile, currentUser } = useAuth()
   const { sessions } = useAnalysis()
+
+  const [userSequences, setUserSequences] = useState<UserSequence[]>([])
+  const [seqLoading, setSeqLoading] = useState(false)
+
+  // Fetch this user's previously submitted sequences (persistent)
+  useEffect(() => {
+    const load = async () => {
+      if (!currentUser) return
+      setSeqLoading(true)
+      try {
+        const q = query(
+          collection(db, 'sequences'),
+          where('uid', '==', currentUser.uid),
+          orderBy('createdAt', 'desc')
+        )
+        const snap = await getDocs(q)
+        const rows: UserSequence[] = []
+        snap.forEach((d) => {
+          const data = d.data() as any
+          const created = data.createdAt?.toDate?.() || new Date()
+          const gc = data.type !== 'protein' ? calculateGCContent(data.sequence, data.type).gcContent : undefined
+          rows.push({ id: d.id, sequence: data.sequence, type: data.type, createdAt: created, gc })
+        })
+        setUserSequences(rows)
+      } catch (e) {
+        console.error(e)
+      } finally {
+        setSeqLoading(false)
+      }
+    }
+    load()
+  }, [currentUser])
 
   // Add error handling for missing data
   if (!sessions) {
@@ -28,7 +71,7 @@ const Dashboard: React.FC = () => {
     )
   }
 
-  // Simple fallback if there are issues with the full dashboard
+  // Stats
   const stats = [
     {
       label: 'Total Analyses',
@@ -65,11 +108,9 @@ const Dashboard: React.FC = () => {
   const formatDate = (value: any) => {
     try {
       if (value instanceof Date) return value.toLocaleDateString()
-      // Firestore Timestamp
       if (value && typeof value === 'object' && 'seconds' in value) {
         return new Date((value as any).seconds * 1000).toLocaleDateString()
       }
-      // ISO string or number
       const d = new Date(value)
       return isNaN(d.getTime()) ? '' : d.toLocaleDateString()
     } catch {
@@ -232,34 +273,53 @@ const Dashboard: React.FC = () => {
             )}
           </motion.div>
 
-          {/* Quick Tips */}
+          {/* My Sequences (Persistent) */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, delay: 0.4 }}
+            transition={{ duration: 0.8, delay: 0.35 }}
             className="bg-white/10 backdrop-blur-sm rounded-2xl border border-white/20 p-6"
           >
-            <h2 className="text-xl font-semibold text-white mb-6">Quick Tips</h2>
-            <div className="space-y-4">
-              <div className="p-4 bg-blue-500/10 rounded-xl border border-blue-500/20">
-                <h3 className="text-blue-300 font-medium mb-2">💡 Pro Tip</h3>
-                <p className="text-blue-100 text-sm">
-                  Use FASTA format for better sequence recognition and analysis accuracy.
-                </p>
-              </div>
-              <div className="p-4 bg-green-500/10 rounded-xl border border-green-500/20">
-                <h3 className="text-green-300 font-medium mb-2">🚀 New Feature</h3>
-                <p className="text-green-100 text-sm">
-                  Try our new 3D protein structure viewer for interactive molecular visualization.
-                </p>
-              </div>
-              <div className="p-4 bg-purple-500/10 rounded-xl border border-purple-500/20">
-                <h3 className="text-purple-300 font-medium mb-2">📊 Analysis Tip</h3>
-                <p className="text-purple-100 text-sm">
-                  Compare multiple sequences to identify conserved regions and mutations.
-                </p>
-              </div>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-semibold text-white">My Sequences</h2>
+              <Link
+                to="/analysis"
+                className="text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors duration-200"
+              >
+                Add New
+              </Link>
             </div>
+
+            {seqLoading ? (
+              <div className="text-gray-300">Loading sequences...</div>
+            ) : !userSequences.length ? (
+              <div className="text-gray-300">No sequences yet. Add one from Analysis.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-gray-300">
+                      <th className="px-4 py-2 text-left">Type</th>
+                      <th className="px-4 py-2 text-left">Sequence</th>
+                      <th className="px-4 py-2 text-right">GC%</th>
+                      <th className="px-4 py-2 text-left">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {userSequences.slice(0, 8).map((r) => (
+                      <tr key={r.id} className="border-t border-white/10 text-white">
+                        <td className="px-4 py-2 whitespace-nowrap">{r.type.toUpperCase()}</td>
+                        <td className="px-4 py-2 max-w-md">
+                          <div className="truncate" title={r.sequence}>{r.sequence}</div>
+                        </td>
+                        <td className="px-4 py-2 text-right">{r.gc?.toFixed(2) ?? '-'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap">{r.createdAt.toLocaleDateString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </motion.div>
         </div>
       </div>

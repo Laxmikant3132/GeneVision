@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
-import { collection, addDoc, updateDoc, deleteDoc, doc, getDocs, query, where, orderBy } from 'firebase/firestore'
+import { collection, addDoc, updateDoc, deleteDoc, doc, getDocs, query, where, orderBy, serverTimestamp } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { useAuth } from './AuthContext'
 import toast from 'react-hot-toast'
@@ -235,12 +235,25 @@ export const AnalysisProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     localStorage.setItem('geneVision_sessions', JSON.stringify(updatedSessions))
 
     try {
-      // Try to update in Firebase
+      // Persist user-submitted sequence to dedicated Firestore collection for admin visibility
       if (currentUser) {
-        await updateDoc(doc(db, 'analysisSessions', currentSession.id), {
-          sequences: updatedSession.sequences,
-          updatedAt: updatedSession.updatedAt
-        })
+        // Build doc without undefined fields (Firestore rejects undefined)
+        const gcDoc: any = {
+          uid: currentUser.uid,
+          email: currentUser.email || '',
+          sequence: sequence.sequence,
+          type: sequence.type,
+          createdAt: serverTimestamp(),
+        }
+        await addDoc(collection(db, 'sequences'), gcDoc)
+
+        // Also update the session document if it exists remotely
+        if (!currentSession.id.startsWith('local_')) {
+          await updateDoc(doc(db, 'analysisSessions', currentSession.id), {
+            sequences: updatedSession.sequences,
+            updatedAt: updatedSession.updatedAt
+          })
+        }
       }
       toast.success('Sequence added successfully')
     } catch (error) {

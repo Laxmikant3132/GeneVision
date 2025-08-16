@@ -14,6 +14,8 @@ import Login from './pages/Login'
 import Register from './pages/Register'
 import ProtectedRoute from './components/auth/ProtectedRoute'
 import ErrorBoundary from './components/ErrorBoundary'
+import AdminPanel from './pages/AdminPanel'
+import AdminRoute from './components/auth/AdminRoute'
 
 function App() {
   return (
@@ -48,6 +50,11 @@ function App() {
                   <ProtectedRoute>
                     <Profile />
                   </ProtectedRoute>
+                } />
+                <Route path="/admin" element={
+                  <AdminRoute>
+                    <AdminPanel />
+                  </AdminRoute>
                 } />
               </Routes>
             </main>

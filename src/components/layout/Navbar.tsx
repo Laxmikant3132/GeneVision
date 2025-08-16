@@ -12,6 +12,7 @@ import {
   FlaskConical,
   Settings
 } from 'lucide-react'
+import { ADMIN_EMAIL } from '../../config/appConfig'
 
 const Navbar: React.FC = () => {
   const { currentUser, logout } = useAuth()
@@ -30,11 +31,14 @@ const Navbar: React.FC = () => {
 
   const isActive = (path: string) => location.pathname === path
 
+  const isAdmin = currentUser?.email === ADMIN_EMAIL
+
   const navLinks = [
     { path: '/', label: 'Home', icon: Home },
     ...(currentUser ? [
       { path: '/dashboard', label: 'Dashboard', icon: BarChart3 },
       { path: '/analysis', label: 'Analysis', icon: FlaskConical },
+      ...(isAdmin ? [{ path: '/admin', label: 'Admin', icon: Settings }] : []),
     ] : [])
   ]
 
