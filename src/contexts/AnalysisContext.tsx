@@ -183,9 +183,13 @@ export const AnalysisProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       try {
         // Try to save to Firebase if logged in
         if (currentUser) {
+          // Exclude local id before saving; Firestore rejects undefined values
+          const { id: _localId, ...sessionData } = newSession
           const docRef = await addDoc(collection(db, 'analysisSessions'), {
-            ...newSession,
-            id: undefined // Remove local ID for Firebase
+            ...sessionData,
+            // Use server timestamps for consistency and proper ordering
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
           })
           
           // Update with Firebase ID

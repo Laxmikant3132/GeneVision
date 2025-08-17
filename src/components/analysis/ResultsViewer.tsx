@@ -97,7 +97,7 @@ const ResultsViewer: React.FC = () => {
         return (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="chart-container">
-              <h4 className="text-lg font-semibold mb-4">Nucleotide Composition</h4>
+              <h4 className="text-lg font-semibold mb-4 text-white">Nucleotide Composition</h4>
               <ResponsiveContainer width="100%" height={300}>
                 <PieChart>
                   <Pie
@@ -120,7 +120,7 @@ const ResultsViewer: React.FC = () => {
             </div>
             
             <div className="chart-container">
-              <h4 className="text-lg font-semibold mb-4">
+              <h4 className="text-lg font-semibold mb-4 text-white">
                 {result.composition && result.composition.U !== undefined ? 'RNA Base Composition' : 'DNA Base Composition'}
               </h4>
               <ResponsiveContainer width="100%" height={300}>
@@ -149,7 +149,7 @@ const ResultsViewer: React.FC = () => {
       case 'codon-usage':
         return (
           <div className="chart-container">
-            <h4 className="text-lg font-semibold mb-4">Top 10 Most Frequent Codons</h4>
+            <h4 className="text-lg font-semibold mb-4 text-white">Top 10 Most Frequent Codons</h4>
             <ResponsiveContainer width="100%" height={400}>
               <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
@@ -173,7 +173,7 @@ const ResultsViewer: React.FC = () => {
         return (
           <div className="space-y-6">
             <div className="chart-container">
-              <h4 className="text-lg font-semibold mb-4">Reading Frame Comparison</h4>
+              <h4 className="text-lg font-semibold mb-4 text-white">Reading Frame Comparison</h4>
               <ResponsiveContainer width="100%" height={300}>
                 <BarChart data={data}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
@@ -216,7 +216,7 @@ const ResultsViewer: React.FC = () => {
 
             {/* 3D Protein Visualization */}
             <div className="chart-container">
-              <h4 className="text-lg font-semibold mb-4">3D Protein Structure Visualization</h4>
+              <h4 className="text-lg font-semibold mb-4 text-white">3D Protein Structure Visualization</h4>
               <div className="bg-white/5 rounded-lg p-4">
                 <SimpleProteinViewer 
                   sequence={result.frames[0].protein}
@@ -234,7 +234,7 @@ const ResultsViewer: React.FC = () => {
           return (
             <div className="space-y-6">
               <div className="chart-container">
-                <h4 className="text-lg font-semibold mb-4">ORF Analysis Results</h4>
+                <h4 className="text-lg font-semibold mb-4 text-white">ORF Analysis Results</h4>
                 <div className="text-center py-8">
                   <div className="p-6 bg-yellow-500/10 rounded-lg border border-yellow-500/20">
                     <h5 className="text-yellow-300 font-medium mb-2">No ORFs Found</h5>
@@ -256,7 +256,7 @@ const ResultsViewer: React.FC = () => {
         return (
           <div className="space-y-6">
             <div className="chart-container">
-              <h4 className="text-lg font-semibold mb-4">ORF Length Distribution</h4>
+              <h4 className="text-lg font-semibold mb-4 text-white">ORF Length Distribution</h4>
               <ResponsiveContainer width="100%" height={300}>
                 <BarChart data={data}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
@@ -280,7 +280,7 @@ const ResultsViewer: React.FC = () => {
             </div>
             
             <div className="chart-container">
-              <h4 className="text-lg font-semibold mb-4">ORF Details</h4>
+              <h4 className="text-lg font-semibold mb-4 text-white">ORF Details</h4>
               <div className="space-y-3">
                 {result.orfs.slice(0, 10).map((orf: any, index: number) => (
                   <div key={index} className="p-4 bg-white/5 rounded-lg">
@@ -338,7 +338,7 @@ const ResultsViewer: React.FC = () => {
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="chart-container">
-                <h4 className="text-lg font-semibold mb-4">Mutation Types</h4>
+                <h4 className="text-lg font-semibold mb-4 text-white">Mutation Types</h4>
                 <ResponsiveContainer width="100%" height={300}>
                   <PieChart>
                     <Pie
@@ -361,7 +361,7 @@ const ResultsViewer: React.FC = () => {
               </div>
 
               <div className="chart-container">
-                <h4 className="text-lg font-semibold mb-4">Mutation Statistics</h4>
+                <h4 className="text-lg font-semibold mb-4 text-white">Mutation Statistics</h4>
                 <div className="space-y-4">
                   <div className="p-4 bg-white/5 rounded-lg">
                     <div className="flex justify-between items-center">
@@ -705,7 +705,7 @@ const ResultsViewer: React.FC = () => {
                     <div className="p-1 bg-purple-500/20 rounded-full mt-1">
                       <div className="w-2 h-2 bg-purple-400 rounded-full"></div>
                     </div>
-                    <p className="text-gray-200 flex-1">{insight}</p>
+                    <p className="text-white flex-1">{insight}</p>
                   </motion.div>
                 ))}
               </div>
@@ -719,7 +719,7 @@ const ResultsViewer: React.FC = () => {
                 View Raw Data
               </summary>
               <div className="p-4 border-t border-white/10">
-                <pre className="text-sm text-gray-300 overflow-x-auto">
+                <pre className="text-sm text-white overflow-x-auto">
                   {JSON.stringify(selectedResultData.result, null, 2)}
                 </pre>
               </div>
