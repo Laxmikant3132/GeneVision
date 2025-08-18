@@ -1,0 +1,1432 @@
+import React, { useState, useEffect, useRef } from 'react'
+import { motion } from 'framer-motion'
+import { useAuth } from '../contexts/AuthContext'
+import { 
+  collection, 
+  addDoc, 
+  query, 
+  where, 
+  orderBy, 
+  getDocs,
+  serverTimestamp 
+} from 'firebase/firestore'
+import { db } from '../lib/firebase'
+import { 
+  calculateGCContent, 
+  analyzeCodonUsage, 
+  compareMutations,
+  validateSequence,
+  normalizeInputSequence,
+  translateDNA,
+  findORFs
+} from '../utils/bioinformatics'
+import { aiInsightsEngine, AIInsight } from '../components/ai/AIInsightsEngine'
+import SimpleHistoryManager, { SimpleHistoryItem } from '../components/history/SimpleHistoryManager'
+import { 
+  Upload, 
+  Dna, 
+  MessageSquare, 
+  BarChart3, 
+  History,
+  Loader2,
+  AlertCircle,
+  CheckCircle,
+  FileText,
+  Microscope,
+  Download,
+  Moon,
+  Sun,
+  Share2,
+  Eye,
+  Trash2,
+  Database,
+  Zap,
+  Info,
+  TrendingUp,
+  Target
+} from 'lucide-react'
+import toast from 'react-hot-toast'
+import jsPDF from 'jspdf'
+import html2canvas from 'html2canvas'
+import FirebaseTest from '../components/FirebaseTest'
+import SimpleAnalysis from '../components/SimpleAnalysis'
+import AuthDebugger from '../components/AuthDebugger'
+
+// 3Dmol.js types
+declare global {
+  interface Window {
+    $3Dmol: any
+  }
+}
+
+interface Consultation {
+  id: string
+  sequence: string
+  sequenceType: 'dna' | 'rna' | 'protein'
+  question: string
+  analysis: {
+    gcContent?: any
+    codonUsage?: any
+    translation?: any
+    orfs?: any
+    mutations?: any
+    aiAnalysis?: any
+  }
+  aiInsights: AIInsight[] | string[] // Support both old and new formats
+  legacyInsights?: string[]
+  createdAt: Date
+}
+
+interface ProteinStructure {
+  pdbId: string
+  title: string
+  resolution?: number
+  structure?: string
+}
+
+const EnhancedSpecialist: React.FC = () => {
+  const { currentUser } = useAuth()
+  const [activeTab, setActiveTab] = useState<'new' | 'history'>('new')
+  const [sequence, setSequence] = useState('')
+  const [sequenceType, setSequenceType] = useState<'dna' | 'rna' | 'protein'>('dna')
+  const [question, setQuestion] = useState('')
+  const [referenceSequence, setReferenceSequence] = useState('')
+  const [targetOrganism, setTargetOrganism] = useState('')
+  const [analysisGoal, setAnalysisGoal] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [consultations, setConsultations] = useState<Consultation[]>([])
+  const [userSequences, setUserSequences] = useState<any[]>([])
+  const [currentAnalysis, setCurrentAnalysis] = useState<any>(null)
+  const [currentAIInsights, setCurrentAIInsights] = useState<AIInsight[]>([])
+  const [proteinStructure, setProteinStructure] = useState<ProteinStructure | null>(null)
+  const [darkMode, setDarkMode] = useState(true)
+  const [selectedConsultation, setSelectedConsultation] = useState<Consultation | null>(null)
+  const [showProteinViewer, setShowProteinViewer] = useState(false)
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false)
+
+  // Initialize 3Dmol viewer when toggled on
+  useEffect(() => {
+    if (!showProteinViewer || !proteinStructure) return
+    const container = proteinViewerRef.current
+    if (!container) return
+
+    try {
+      // Clear existing content
+      container.innerHTML = ''
+
+      if (!window.$3Dmol) {
+        console.warn('3Dmol library not loaded')
+        return
+      }
+      // Create viewer and load PDB by ID
+      const viewer = window.$3Dmol.createViewer(container, { backgroundColor: 'black', antialias: true })
+      window.$3Dmol.download(`pdb:${proteinStructure.pdbId}`, viewer, {}, () => {
+        viewer.setStyle({}, { cartoon: { colorscheme: 'spectrum' } })
+        viewer.zoomTo()
+        viewer.render()
+      })
+    } catch (e) {
+      console.error('Failed to init 3D viewer', e)
+    }
+  }, [showProteinViewer, proteinStructure])
+  const analysisRef = useRef<HTMLDivElement>(null)
+  const proteinViewerRef = useRef<HTMLDivElement | null>(null)
+
+  // Load user's consultation history and sequences
+  useEffect(() => {
+    if (currentUser) {
+      loadConsultationHistory()
+      loadUserSequences()
+    }
+  }, [currentUser])
+
+  const loadConsultationHistory = async () => {
+    if (!currentUser) {
+      console.log('No current user, skipping consultation history load')
+      return
+    }
+
+    console.log('Loading consultation history for user:', currentUser.uid)
+    try {
+      // Only load current user's consultations to satisfy rules
+      const q = query(
+        collection(db, 'consultations'),
+        where('userId', '==', currentUser.uid)
+      )
+      const snapshot = await getDocs(q)
+      const history: Consultation[] = []
+      
+      console.log('Found', snapshot.size, 'consultations')
+      snapshot.forEach((doc) => {
+        const data = doc.data()
+        console.log('Consultation data:', data)
+        history.push({
+          id: doc.id,
+          ...data,
+          createdAt: data.createdAt?.toDate() || new Date()
+        } as Consultation)
+      })
+      
+      console.log('Setting consultations:', history)
+      setConsultations(history)
+    } catch (error) {
+      console.error('Error loading consultation history:', error)
+    }
+  }
+
+  const loadUserSequences = async () => {
+    if (!currentUser) return
+
+    try {
+      // First try without orderBy to see if it's an index issue
+      const q = query(
+        collection(db, 'sequences'),
+        where('uid', '==', currentUser.uid)
+      )
+      const snapshot = await getDocs(q)
+      const userSequences: any[] = []
+      
+      snapshot.forEach((doc) => {
+        const data = doc.data()
+        userSequences.push({
+          id: doc.id,
+          ...data,
+          createdAt: data.createdAt?.toDate() || new Date()
+        })
+      })
+      
+      // Store sequences for display in "My Sequences" section
+      setUserSequences(userSequences)
+    } catch (error) {
+      console.error('Error loading user sequences:', error)
+    }
+  }
+
+  const generateAIInsights = (analysisType: string, result: any, question: string): string[] => {
+    const insights: string[] = []
+    
+    // Basic insights based on analysis type
+    if (analysisType === 'gc-content' && result.gcContent !== undefined) {
+      if (result.gcContent > 60) {
+        insights.push('High GC content (>60%) suggests thermostable properties and potential for strong secondary structures.')
+        insights.push('This sequence may be suitable for high-temperature applications or organisms.')
+      } else if (result.gcContent < 40) {
+        insights.push('Low GC content (<40%) may indicate AT-rich regions, common in regulatory sequences.')
+        insights.push('Consider potential for weaker secondary structures and lower melting temperature.')
+      } else {
+        insights.push('Moderate GC content suggests balanced nucleotide composition.')
+        insights.push('This sequence shows typical characteristics for most organisms.')
+      }
+      
+      if (Math.abs(result.gcSkew) > 0.1) {
+        insights.push('Significant GC skew detected, which may indicate replication origin or transcriptional bias.')
+      }
+    }
+
+    if (analysisType === 'codon-usage' && result.totalCodons > 0) {
+      insights.push(`Analysis of ${result.totalCodons} codons reveals codon usage patterns.`)
+      if (result.mostFrequent.length > 0) {
+        insights.push(`Most frequent codons: ${result.mostFrequent.slice(0, 3).join(', ')}`)
+      }
+      if (result.codonBias > 0.02) {
+        insights.push('Significant codon bias detected, suggesting possible optimization for specific expression systems.')
+        insights.push('Consider codon optimization if expressing in a different organism.')
+      } else {
+        insights.push('Low codon bias indicates relatively balanced codon usage.')
+      }
+    }
+
+    if (analysisType === 'translation' && result.protein) {
+      if (result.hydropathy > 1) {
+        insights.push('Hydrophobic protein detected - likely membrane-associated or structural protein.')
+        insights.push('May require special conditions for expression and purification.')
+      } else if (result.hydropathy < -1) {
+        insights.push('Hydrophilic protein detected - likely soluble or extracellular protein.')
+        insights.push('Should be relatively easy to express and purify in aqueous systems.')
+      }
+      
+      if (result.molecularWeight > 50000) {
+        insights.push('Large protein (>50kDa) - may have multiple domains or complex structure.')
+        insights.push('Consider domain analysis and potential for separate expression of domains.')
+      } else if (result.molecularWeight < 10000) {
+        insights.push('Small protein/peptide (<10kDa) - may be suitable for chemical synthesis.')
+      }
+
+      if (result.isoelectricPoint > 8) {
+        insights.push('Basic protein (pI > 8) - consider pH conditions for optimal stability.')
+      } else if (result.isoelectricPoint < 6) {
+        insights.push('Acidic protein (pI < 6) - may interact strongly with positively charged surfaces.')
+      }
+    }
+
+    if (analysisType === 'mutations' && result.totalMutations > 0) {
+      insights.push(`${result.totalMutations} mutations detected with ${result.mutationRate.toFixed(2)}% mutation rate.`)
+      const missense = result.mutations.filter((m: any) => m.effect === 'missense').length
+      const synonymous = result.mutations.filter((m: any) => m.effect === 'synonymous').length
+      const nonsense = result.mutations.filter((m: any) => m.effect === 'nonsense').length
+      
+      if (missense > synonymous) {
+        insights.push('More missense than synonymous mutations - may indicate functional impact.')
+        insights.push('Consider structural and functional analysis of affected amino acids.')
+      }
+      
+      if (nonsense > 0) {
+        insights.push(`${nonsense} nonsense mutations detected - these create premature stop codons.`)
+        insights.push('Nonsense mutations likely have severe functional consequences.')
+      }
+    }
+
+    // Question-specific insights
+    const lowerQuestion = question.toLowerCase()
+    if (lowerQuestion.includes('disease') || lowerQuestion.includes('pathogen')) {
+      insights.push('For disease-related analysis, consider comparing with known pathogenic variants.')
+      insights.push('Check databases like ClinVar or OMIM for known disease associations.')
+    }
+    
+    if (lowerQuestion.includes('expression') || lowerQuestion.includes('protein')) {
+      insights.push('For expression analysis, consider codon optimization and secondary structure predictions.')
+      insights.push('Evaluate signal peptides, transmembrane domains, and post-translational modifications.')
+    }
+
+    if (lowerQuestion.includes('evolution') || lowerQuestion.includes('phylogen')) {
+      insights.push('For evolutionary analysis, consider comparing with homologous sequences from different species.')
+      insights.push('Analyze conservation patterns and selection pressure indicators.')
+    }
+
+    if (lowerQuestion.includes('drug') || lowerQuestion.includes('target')) {
+      insights.push('For drug target analysis, consider binding sites, allosteric sites, and druggability.')
+      insights.push('Evaluate structural features that may affect drug binding.')
+    }
+
+    return insights.length > 0 ? insights : ['Analysis completed. Consider the numerical results in context of your research question.']
+  }
+
+  const generateContextualInsights = (question: string, sequenceType: string, sequence: string): string[] => {
+    const insights: string[] = []
+    const lowerQuestion = question.toLowerCase()
+    
+    // General sequence insights
+    if (sequence.length < 50) {
+      insights.push('Short sequence detected. Consider if this represents a complete functional unit.')
+    } else if (sequence.length > 1000) {
+      insights.push('Long sequence detected. This may contain multiple functional domains or regulatory regions.')
+    }
+
+    // Sequence type specific insights
+    if (sequenceType === 'dna') {
+      insights.push('DNA sequence analysis complete. Consider transcription factors, promoter regions, and regulatory elements.')
+      if (lowerQuestion.includes('gene') || lowerQuestion.includes('coding')) {
+        insights.push('For gene analysis, examine ORFs, splice sites, and regulatory sequences.')
+      }
+    } else if (sequenceType === 'rna') {
+      insights.push('RNA sequence analysis complete. Consider secondary structure, miRNA targets, and splicing patterns.')
+      if (lowerQuestion.includes('mrna') || lowerQuestion.includes('expression')) {
+        insights.push('For mRNA analysis, examine UTRs, kozak sequences, and stability elements.')
+      }
+    } else if (sequenceType === 'protein') {
+      insights.push('Protein sequence analysis complete. Consider domains, motifs, and post-translational modifications.')
+      if (lowerQuestion.includes('function') || lowerQuestion.includes('activity')) {
+        insights.push('For functional analysis, examine active sites, binding domains, and structural motifs.')
+      }
+    }
+
+    // Research context insights
+    if (lowerQuestion.includes('disease') || lowerQuestion.includes('pathogen')) {
+      insights.push('For disease-related analysis, consider pathogenicity factors and host interactions.')
+    }
+
+    if (lowerQuestion.includes('evolution') || lowerQuestion.includes('phylogen')) {
+      insights.push('For evolutionary analysis, compare with orthologous sequences and examine conservation patterns.')
+    }
+
+    if (lowerQuestion.includes('drug') || lowerQuestion.includes('therapeutic')) {
+      insights.push('For therapeutic applications, consider druggability, target specificity, and off-target effects.')
+    }
+
+    // Add at least one insight if none were generated
+    if (insights.length === 0) {
+      insights.push('Comprehensive bioinformatics analysis completed. Review the detailed results above for specific findings.')
+      insights.push('Consider the biological context of your sequence when interpreting these results.')
+    }
+
+    return insights
+  }
+
+  const searchProteinStructure = async (sequence: string): Promise<ProteinStructure | null> => {
+    // For demo: return a known PDB so the 3D viewer renders (requires 3Dmol.js)
+    if (sequence.length > 50 && sequenceType === 'protein') {
+      return {
+        pdbId: '1CRN', // Crambin - small and fast to render
+        title: 'Crambin Protein',
+        resolution: 1.5
+      }
+    }
+    return null
+  }
+
+  const performAnalysis = async () => {
+    console.log('performAnalysis called')
+    console.log('currentUser:', currentUser)
+    console.log('sequence:', sequence.substring(0, 50) + '...')
+    console.log('question:', question)
+    
+    if (!sequence.trim()) {
+      toast.error('Please enter a sequence')
+      return
+    }
+
+    if (!question.trim()) {
+      toast.error('Please enter your question')
+      return
+    }
+
+    if (!currentUser) {
+      toast.error('Please log in to perform analysis')
+      return
+    }
+
+    setLoading(true)
+    toast.loading('Starting AI-powered analysis...', { id: 'analysis' })
+    
+    try {
+      console.log('Starting comprehensive AI analysis...')
+      
+      // Use the new AI insights engine for comprehensive analysis
+      const aiAnalysisResult = await aiInsightsEngine.analyzeSequence(
+        sequence,
+        sequenceType,
+        {
+          question,
+          referenceSequence: referenceSequence.trim() || undefined,
+          targetOrganism: targetOrganism.trim() || undefined,
+          analysisGoal: analysisGoal.trim() || undefined
+        }
+      )
+
+      console.log('AI analysis completed:', aiAnalysisResult)
+
+      // Legacy analysis for backward compatibility
+      const normalizedSequence = normalizeInputSequence(sequence, sequenceType)
+      const legacyAnalysis: any = {}
+      const legacyInsights: string[] = []
+
+      // Perform legacy analyses for display compatibility
+      if (sequenceType === 'dna' || sequenceType === 'rna') {
+        legacyAnalysis.gcContent = calculateGCContent(normalizedSequence, sequenceType)
+        legacyAnalysis.codonUsage = analyzeCodonUsage(normalizedSequence, sequenceType)
+        legacyAnalysis.translation = translateDNA(normalizedSequence, 0, sequenceType)
+        legacyAnalysis.orfs = findORFs(normalizedSequence, sequenceType)
+
+        if (referenceSequence.trim()) {
+          const normalizedRef = normalizeInputSequence(referenceSequence, sequenceType)
+          if (validateSequence(normalizedRef, sequenceType)) {
+            legacyAnalysis.mutations = compareMutations(normalizedRef, normalizedSequence)
+          }
+        }
+
+        // Generate legacy insights for backward compatibility
+        legacyInsights.push(...generateAIInsights('gc-content', legacyAnalysis.gcContent, question))
+        legacyInsights.push(...generateAIInsights('codon-usage', legacyAnalysis.codonUsage, question))
+        legacyInsights.push(...generateAIInsights('translation', legacyAnalysis.translation, question))
+        
+        if (legacyAnalysis.orfs.length > 0) {
+          legacyInsights.push(`Found ${legacyAnalysis.orfs.length} open reading frames.`)
+          legacyInsights.push(`Longest ORF: ${legacyAnalysis.orfs[0].protein.length} amino acids.`)
+        }
+
+        if (legacyAnalysis.mutations) {
+          legacyInsights.push(...generateAIInsights('mutations', legacyAnalysis.mutations, question))
+        }
+      } else if (sequenceType === 'protein') {
+        // Protein analysis
+        legacyAnalysis.composition = {}
+        for (const aa of normalizedSequence) {
+          legacyAnalysis.composition[aa] = (legacyAnalysis.composition[aa] || 0) + 1
+        }
+        
+        const hydrophobicAAs = ['A', 'I', 'L', 'M', 'F', 'W', 'Y', 'V']
+        const hydrophobicCount = normalizedSequence.split('').filter(aa => hydrophobicAAs.includes(aa)).length
+        const hydrophobicRatio = hydrophobicCount / normalizedSequence.length
+        
+        legacyAnalysis.proteinProperties = {
+          length: normalizedSequence.length,
+          hydrophobicRatio: Math.round(hydrophobicRatio * 100) / 100,
+          composition: legacyAnalysis.composition
+        }
+        
+        legacyInsights.push(`Protein sequence of ${normalizedSequence.length} amino acids analyzed.`)
+        legacyInsights.push(`Hydrophobic residue ratio: ${(hydrophobicRatio * 100).toFixed(1)}%`)
+        
+        // Search for protein structure
+        const structure = await searchProteinStructure(normalizedSequence)
+        if (structure) {
+          setProteinStructure(structure)
+          legacyInsights.push(`Potential protein structure information available.`)
+          legacyInsights.push(`Consider 3D structure analysis for detailed insights.`)
+        }
+      }
+
+      // Add general contextual insights
+      const generalInsights = generateContextualInsights(question, sequenceType, normalizedSequence)
+      legacyInsights.push(...generalInsights)
+
+      // Combine AI analysis with legacy analysis
+      const combinedAnalysis = {
+        ...legacyAnalysis,
+        aiAnalysis: aiAnalysisResult
+      }
+
+      setCurrentAnalysis(combinedAnalysis)
+      setCurrentAIInsights(aiAnalysisResult.insights)
+
+      // Save consultation to Firebase
+      const consultation = {
+        userId: currentUser?.uid,
+        userEmail: currentUser?.email,
+        sequence: aiAnalysisResult.sequence,
+        sequenceType,
+        question,
+        referenceSequence: referenceSequence.trim(),
+        targetOrganism: targetOrganism.trim(),
+        analysisGoal: analysisGoal.trim(),
+        analysis: combinedAnalysis,
+        aiInsights: aiAnalysisResult.insights,
+        legacyInsights: legacyInsights,
+        createdAt: serverTimestamp()
+      }
+
+      console.log('Saving consultation:', consultation)
+      const consultationRef = await addDoc(collection(db, 'consultations'), consultation)
+      console.log('Consultation saved with ID:', consultationRef.id)
+
+      // Also save sequence to sequences collection
+      const sequenceDoc = {
+        uid: currentUser?.uid,
+        email: currentUser?.email,
+        sequence: aiAnalysisResult.sequence,
+        type: sequenceType,
+        name: `${sequenceType.toUpperCase()} Sequence - ${new Date().toLocaleDateString()}`,
+        description: question.substring(0, 100) + (question.length > 100 ? '...' : ''),
+        createdAt: serverTimestamp(),
+        status: 'completed',
+        qualityScore: aiAnalysisResult.quality.score,
+        aiInsightsCount: aiAnalysisResult.insights.length
+      }
+
+      console.log('Saving sequence:', sequenceDoc)
+      const sequenceRef = await addDoc(collection(db, 'sequences'), sequenceDoc)
+      console.log('Sequence saved with ID:', sequenceRef.id)
+      
+      // Reload consultation history and sequences
+      await loadConsultationHistory()
+      await loadUserSequences()
+      
+      toast.success('Analysis completed successfully!', { id: 'analysis' })
+      
+    } catch (error) {
+      console.error('Analysis error:', error)
+      toast.error('Analysis failed: ' + (error as Error).message, { id: 'analysis' })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const exportToPDF = async () => {
+    if (!currentAnalysis || !analysisRef.current) {
+      toast.error('No analysis results to export')
+      return
+    }
+
+    try {
+      const canvas = await html2canvas(analysisRef.current, {
+        backgroundColor: '#1e293b',
+        scale: 2
+      })
+      
+      const imgData = canvas.toDataURL('image/png')
+      const pdf = new jsPDF('p', 'mm', 'a4')
+      
+      // Add title
+      pdf.setFontSize(20)
+      pdf.text('GeneVision Analysis Report', 20, 20)
+      
+      // Add metadata
+      pdf.setFontSize(12)
+      pdf.text(`Date: ${new Date().toLocaleDateString()}`, 20, 35)
+      pdf.text(`Sequence Type: ${sequenceType.toUpperCase()}`, 20, 45)
+      pdf.text(`User: ${currentUser?.email || 'Unknown'}`, 20, 55)
+      
+      // Add question
+      pdf.text('Question:', 20, 70)
+      const splitQuestion = pdf.splitTextToSize(question, 170)
+      pdf.text(splitQuestion, 20, 80)
+      
+      // Add sequence (truncated if too long)
+      const sequenceText = sequence.length > 100 ? sequence.substring(0, 100) + '...' : sequence
+      pdf.text('Sequence:', 20, 100)
+      pdf.text(sequenceText, 20, 110)
+      
+      // Add analysis image
+      const imgWidth = 170
+      const imgHeight = (canvas.height * imgWidth) / canvas.width
+      pdf.addImage(imgData, 'PNG', 20, 130, imgWidth, imgHeight)
+      
+      pdf.save(`genevision-analysis-${Date.now()}.pdf`)
+      toast.success('PDF exported successfully!')
+    } catch (error) {
+      console.error('PDF export error:', error)
+      toast.error('Failed to export PDF')
+    }
+  }
+
+  const exportToCSV = () => {
+    if (!currentAnalysis) {
+      toast.error('No analysis results to export')
+      return
+    }
+
+    const csvData = []
+    csvData.push(['Parameter', 'Value'])
+    csvData.push(['Date', new Date().toISOString()])
+    csvData.push(['Sequence Type', sequenceType.toUpperCase()])
+    csvData.push(['Sequence Length', sequence.length])
+    csvData.push(['Question', question])
+    
+    if (currentAnalysis.gcContent) {
+      csvData.push(['GC Content (%)', currentAnalysis.gcContent.gcContent])
+      csvData.push(['AT Content (%)', currentAnalysis.gcContent.atContent])
+      csvData.push(['GC Skew', currentAnalysis.gcContent.gcSkew])
+    }
+    
+    if (currentAnalysis.translation) {
+      csvData.push(['Protein Length (AA)', currentAnalysis.translation.length])
+      csvData.push(['Molecular Weight (Da)', currentAnalysis.translation.molecularWeight])
+      csvData.push(['Isoelectric Point', currentAnalysis.translation.isoelectricPoint])
+      csvData.push(['Hydropathy Index', currentAnalysis.translation.hydropathy])
+    }
+    
+    if (currentAnalysis.mutations) {
+      csvData.push(['Total Mutations', currentAnalysis.mutations.totalMutations])
+      csvData.push(['Mutation Rate (%)', currentAnalysis.mutations.mutationRate])
+    }
+
+    const csvContent = csvData.map(row => row.join(',')).join('\n')
+    const blob = new Blob([csvContent], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `genevision-analysis-${Date.now()}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    
+    toast.success('CSV exported successfully!')
+  }
+
+  const renderAnalysisResults = (analysis: any) => {
+    if (!analysis) return null
+
+    return (
+      <div ref={analysisRef} className="space-y-6">
+        {/* Export Buttons */}
+        <div className="flex flex-wrap gap-3 mb-6">
+          <button
+            onClick={exportToPDF}
+            className="flex items-center space-x-2 px-4 py-2 bg-red-500/20 text-red-300 rounded-lg hover:bg-red-500/30 transition-colors"
+          >
+            <Download className="h-4 w-4" />
+            <span>Export PDF</span>
+          </button>
+          <button
+            onClick={exportToCSV}
+            className="flex items-center space-x-2 px-4 py-2 bg-green-500/20 text-green-300 rounded-lg hover:bg-green-500/30 transition-colors"
+          >
+            <Download className="h-4 w-4" />
+            <span>Export CSV</span>
+          </button>
+          {proteinStructure && (
+            <button
+              onClick={() => setShowProteinViewer(!showProteinViewer)}
+              className="flex items-center space-x-2 px-4 py-2 bg-purple-500/20 text-purple-300 rounded-lg hover:bg-purple-500/30 transition-colors"
+            >
+              <Microscope className="h-4 w-4" />
+              <span>{showProteinViewer ? 'Hide' : 'Show'} 3D Structure</span>
+            </button>
+          )}
+        </div>
+
+        {/* Enhanced AI Insights Section */}
+        {currentAIInsights && currentAIInsights.length > 0 && (
+          <div className="bg-gradient-to-r from-blue-500/10 to-purple-500/10 backdrop-blur-sm rounded-xl p-6 border border-blue-500/20">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+              <Zap className="h-5 w-5 mr-2 text-yellow-400" />
+              AI-Powered Insights & Recommendations
+            </h3>
+            <div className="space-y-4">
+              {currentAIInsights.map((insight, index) => (
+                <motion.div
+                  key={insight.id}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: index * 0.1 }}
+                  className={`p-4 rounded-lg border-l-4 ${
+                    insight.type === 'critical' ? 'bg-red-500/10 border-red-500 border-l-red-500' :
+                    insight.type === 'warning' ? 'bg-yellow-500/10 border-yellow-500 border-l-yellow-500' :
+                    insight.type === 'suggestion' ? 'bg-blue-500/10 border-blue-500 border-l-blue-500' :
+                    'bg-green-500/10 border-green-500 border-l-green-500'
+                  }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center space-x-2 mb-2">
+                        {insight.type === 'critical' && <AlertCircle className="h-4 w-4 text-red-400" />}
+                        {insight.type === 'warning' && <AlertCircle className="h-4 w-4 text-yellow-400" />}
+                        {insight.type === 'suggestion' && <TrendingUp className="h-4 w-4 text-blue-400" />}
+                        {insight.type === 'info' && <Info className="h-4 w-4 text-green-400" />}
+                        <h4 className="text-sm font-semibold text-white">{insight.title}</h4>
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                          insight.category === 'quality' ? 'bg-purple-500/20 text-purple-300' :
+                          insight.category === 'functional' ? 'bg-green-500/20 text-green-300' :
+                          insight.category === 'structural' ? 'bg-blue-500/20 text-blue-300' :
+                          insight.category === 'optimization' ? 'bg-yellow-500/20 text-yellow-300' :
+                          'bg-gray-500/20 text-gray-300'
+                        }`}>
+                          {insight.category}
+                        </span>
+                      </div>
+                      <p className="text-gray-200 text-sm leading-relaxed mb-2">{insight.description}</p>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <div className="flex items-center space-x-1">
+                            <div className="w-2 h-2 bg-white rounded-full"></div>
+                            <span className="text-xs text-gray-400">
+                              Confidence: {(insight.confidence * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                          {insight.actionable && (
+                            <span className="px-2 py-1 bg-green-500/20 text-green-300 rounded-full text-xs">
+                              Actionable
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Legacy AI Insights (for backward compatibility) */}
+        {currentAnalysis && currentAnalysis.legacyInsights && currentAnalysis.legacyInsights.length > 0 && (
+          <div className="bg-gradient-to-r from-gray-500/10 to-gray-600/10 backdrop-blur-sm rounded-xl p-6 border border-gray-500/20">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+              <MessageSquare className="h-5 w-5 mr-2 text-gray-400" />
+              Additional Analysis Notes
+            </h3>
+            <div className="space-y-3">
+              {currentAnalysis.legacyInsights.map((insight: string, index: number) => (
+                <div key={index} className="flex items-start space-x-3">
+                  <div className="w-2 h-2 bg-gray-400 rounded-full mt-2 flex-shrink-0"></div>
+                  <p className="text-gray-300 text-sm leading-relaxed">{insight}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {analysis.gcContent && (
+          <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+              <BarChart3 className="h-5 w-5 mr-2" />
+              GC Content Analysis
+            </h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="text-center">
+                <div className="text-2xl font-bold text-blue-400">{analysis.gcContent.gcContent}%</div>
+                <div className="text-sm text-gray-300">GC Content</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-green-400">{analysis.gcContent.atContent}%</div>
+                <div className="text-sm text-gray-300">AT Content</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-purple-400">{analysis.gcContent.gcSkew}</div>
+                <div className="text-sm text-gray-300">GC Skew</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-yellow-400">{analysis.gcContent.length}</div>
+                <div className="text-sm text-gray-300">Length</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {analysis.codonUsage && (
+          <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+              <Dna className="h-5 w-5 mr-2" />
+              Codon Usage Analysis
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <h4 className="text-sm font-medium text-gray-300 mb-2">Most Frequent Codons</h4>
+                <div className="space-y-1">
+                  {analysis.codonUsage.mostFrequent.slice(0, 5).map((codon: string, index: number) => (
+                    <div key={index} className="text-sm text-white bg-white/5 px-2 py-1 rounded">
+                      {codon}: {analysis.codonUsage.codons[codon]} times
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <h4 className="text-sm font-medium text-gray-300 mb-2">Statistics</h4>
+                <div className="space-y-2">
+                  <div className="text-sm text-white">Total Codons: {analysis.codonUsage.totalCodons}</div>
+                  <div className="text-sm text-white">Codon Bias: {analysis.codonUsage.codonBias}</div>
+                  <div className="text-sm text-white">Unique Codons: {Object.keys(analysis.codonUsage.codons).length}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {analysis.translation && (
+          <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+              <Microscope className="h-5 w-5 mr-2" />
+              Translation Analysis
+            </h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+              <div className="text-center">
+                <div className="text-2xl font-bold text-blue-400">{analysis.translation.length}</div>
+                <div className="text-sm text-gray-300">AA Length</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-green-400">{analysis.translation.molecularWeight}</div>
+                <div className="text-sm text-gray-300">MW (Da)</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-purple-400">{analysis.translation.isoelectricPoint}</div>
+                <div className="text-sm text-gray-300">pI</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-yellow-400">{analysis.translation.hydropathy}</div>
+                <div className="text-sm text-gray-300">Hydropathy</div>
+              </div>
+            </div>
+            <div>
+              <h4 className="text-sm font-medium text-gray-300 mb-2">Protein Sequence</h4>
+              <div className="bg-black/20 p-3 rounded-lg font-mono text-sm text-white break-all max-h-32 overflow-y-auto">
+                {analysis.translation.protein}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {analysis.mutations && analysis.mutations.totalMutations > 0 && (
+          <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+              <AlertCircle className="h-5 w-5 mr-2" />
+              Mutation Analysis
+            </h3>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+              <div className="text-center">
+                <div className="text-2xl font-bold text-red-400">{analysis.mutations.totalMutations}</div>
+                <div className="text-sm text-gray-300">Total Mutations</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-orange-400">{analysis.mutations.mutationRate.toFixed(2)}%</div>
+                <div className="text-sm text-gray-300">Mutation Rate</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-yellow-400">
+                  {analysis.mutations.mutations.filter((m: any) => m.effect === 'missense').length}
+                </div>
+                <div className="text-sm text-gray-300">Missense</div>
+              </div>
+            </div>
+            <div className="max-h-40 overflow-y-auto">
+              <h4 className="text-sm font-medium text-gray-300 mb-2">Mutations Found</h4>
+              {analysis.mutations.mutations.slice(0, 10).map((mutation: any, index: number) => (
+                <div key={index} className="text-sm text-white bg-white/5 px-2 py-1 rounded mb-1">
+                  Position {mutation.position + 1}: {mutation.original} → {mutation.mutated} ({mutation.effect})
+                </div>
+              ))}
+              {analysis.mutations.mutations.length > 10 && (
+                <div className="text-sm text-gray-400 mt-2">
+                  ... and {analysis.mutations.mutations.length - 10} more mutations
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {proteinStructure && showProteinViewer && (
+          <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+              <Microscope className="h-5 w-5 mr-2" />
+              Protein Structure Analysis
+            </h3>
+            <div className="text-white space-y-3">
+              <p><strong>PDB ID:</strong> {proteinStructure.pdbId}</p>
+              <p><strong>Title:</strong> {proteinStructure.title}</p>
+              {proteinStructure.resolution && (
+                <p><strong>Resolution:</strong> {proteinStructure.resolution} Å</p>
+              )}
+              <div className="mt-4 p-6 bg-black/20 rounded-lg border-2 border-dashed border-gray-600">
+                <div className="text-center text-gray-300">
+                  <div ref={proteinViewerRef} id="protein-3d-viewer" className="w-full h-[420px] rounded-lg overflow-hidden border border-white/10 bg-black"></div>
+                  <div className="text-xs text-gray-400 space-y-1 mt-3">
+                    <p>• Rotate: Left mouse drag</p>
+                    <p>• Zoom: Mouse wheel</p>
+                    <p>• Pan: Right mouse drag</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const renderUserSequences = () => {
+    return (
+      <div className="space-y-4">
+        <h3 className={`text-lg font-semibold mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+          My Sequences ({userSequences.length})
+        </h3>
+        {userSequences.length === 0 ? (
+          <div className="text-center py-8">
+            <Database className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No sequences saved yet</p>
+          </div>
+        ) : (
+          userSequences.map((seq) => (
+            <motion.div
+              key={seq.id}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={`p-4 rounded-lg border ${
+                darkMode 
+                  ? 'bg-white/5 border-white/10 hover:bg-white/10' 
+                  : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
+              } transition-all duration-200`}
+            >
+              <div className="flex justify-between items-start mb-2">
+                <div className="flex items-center space-x-3">
+                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                    seq.type === 'dna' ? 'bg-blue-500/20 text-blue-300' :
+                    seq.type === 'rna' ? 'bg-green-500/20 text-green-300' :
+                    'bg-purple-500/20 text-purple-300'
+                  }`}>
+                    {seq.type.toUpperCase()}
+                  </span>
+                  <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    {seq.createdAt.toLocaleDateString()}
+                  </span>
+                </div>
+                <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                  {seq.sequence.length} bp/aa
+                </span>
+              </div>
+              <p className={`text-sm mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                {seq.name}
+              </p>
+              {seq.description && (
+                <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  {seq.description}
+                </p>
+              )}
+            </motion.div>
+          ))
+        )}
+      </div>
+    )
+  }
+
+  const renderConsultationHistory = () => {
+    return (
+      <div className="space-y-4">
+        <h3 className={`text-lg font-semibold mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+          Recent Sessions ({consultations.length})
+        </h3>
+        {consultations.length === 0 ? (
+          <div className="text-center py-8">
+            <MessageSquare className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No consultations yet</p>
+          </div>
+        ) : (
+          consultations.map((consultation) => (
+            <motion.div
+              key={consultation.id}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-white/5 rounded-lg p-6 border border-white/10 hover:bg-white/10 transition-all duration-200"
+            >
+              <div className="flex justify-between items-start mb-4">
+                <div className="flex items-center space-x-3">
+                  <span className="px-3 py-1 bg-blue-500/20 text-blue-300 rounded-full text-xs font-medium">
+                    {consultation.sequenceType.toUpperCase()}
+                  </span>
+                  <span className="text-gray-400 text-sm">
+                    {consultation.createdAt.toLocaleDateString()} at {consultation.createdAt.toLocaleTimeString()}
+                  </span>
+                </div>
+                <div className="flex space-x-2">
+                  <button
+                    onClick={() => setSelectedConsultation(selectedConsultation?.id === consultation.id ? null : consultation)}
+                    className="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
+                  >
+                    <Eye className="h-4 w-4" />
+                  </button>
+                  <button className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+              
+              <div className="space-y-3">
+                <div>
+                  <p className="text-white font-medium mb-1">Question:</p>
+                  <p className="text-gray-300 text-sm">{consultation.question}</p>
+                </div>
+                
+                <div>
+                  <p className="text-white font-medium mb-1">Sequence Preview:</p>
+                  <p className="text-gray-300 text-xs font-mono bg-black/20 p-2 rounded">
+                    {consultation.sequence.length > 100 
+                      ? `${consultation.sequence.substring(0, 100)}...` 
+                      : consultation.sequence}
+                  </p>
+                  <p className="text-gray-400 text-xs mt-1">
+                    Length: {consultation.sequence.length} {consultation.sequenceType === 'protein' ? 'amino acids' : 'nucleotides'}
+                  </p>
+                </div>
+                
+                {consultation.aiInsights && consultation.aiInsights.length > 0 && (
+                  <div>
+                    <p className="text-white font-medium mb-2">Key Insights:</p>
+                    <div className="space-y-1">
+                      {consultation.aiInsights.slice(0, 2).map((insight, index) => (
+                        <div key={index} className="flex items-start space-x-2">
+                          <span className="text-blue-400 text-xs mt-1">•</span>
+                          <p className="text-gray-300 text-xs">
+                            {typeof insight === 'string' ? insight : insight.description}
+                          </p>
+                        </div>
+                      ))}
+                      {consultation.aiInsights.length > 2 && (
+                        <p className="text-gray-400 text-xs">
+                          +{consultation.aiInsights.length - 2} more insights
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+                
+                {consultation.legacyInsights && consultation.legacyInsights.length > 0 && (
+                  <div>
+                    <p className="text-white font-medium mb-2">Additional Notes:</p>
+                    <div className="space-y-1">
+                      {consultation.legacyInsights.slice(0, 2).map((insight, index) => (
+                        <div key={index} className="flex items-start space-x-2">
+                          <span className="text-gray-400 text-xs mt-1">•</span>
+                          <p className="text-gray-300 text-xs">{insight}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {selectedConsultation?.id === consultation.id && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="mt-6 pt-6 border-t border-white/10"
+                >
+                  <h4 className="text-white font-medium mb-4">Detailed Analysis Results</h4>
+                  {renderAnalysisResults(consultation.analysis)}
+                </motion.div>
+              )}
+            </motion.div>
+          ))
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className={`min-h-screen py-8 px-4 sm:px-6 lg:px-8 ${darkMode ? 'bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900' : 'bg-gradient-to-br from-gray-50 to-blue-50'}`}>
+      <div className="max-w-7xl mx-auto">
+        {/* Header with Dark Mode Toggle */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8 }}
+          className="mb-8"
+        >
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <h1 className={`text-3xl md:text-4xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                Enhanced Specialist Consultation
+              </h1>
+              <p className={`text-lg ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                Advanced AI-powered bioinformatics analysis with export capabilities
+              </p>
+            </div>
+            <button
+              onClick={() => setDarkMode(!darkMode)}
+              className={`p-3 rounded-xl transition-all duration-200 ${
+                darkMode 
+                  ? 'bg-white/10 text-yellow-400 hover:bg-white/20' 
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+            >
+              {darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+            </button>
+          </div>
+        </motion.div>
+
+        {/* Authentication Debug Info */}
+        <AuthDebugger />
+
+        {/* Navigation Tabs */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8, delay: 0.1 }}
+          className="mb-8"
+        >
+          <div className={`flex space-x-1 p-1 rounded-xl ${darkMode ? 'bg-white/10 backdrop-blur-sm' : 'bg-white shadow-lg'}`}>
+            <button
+              onClick={() => setActiveTab('new')}
+              className={`flex items-center space-x-2 px-6 py-3 rounded-lg font-medium transition-all duration-200 ${
+                activeTab === 'new'
+                  ? darkMode 
+                    ? 'bg-white/20 text-white shadow-lg' 
+                    : 'bg-blue-500 text-white shadow-lg'
+                  : darkMode
+                    ? 'text-gray-300 hover:text-white hover:bg-white/10'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+              }`}
+            >
+              <Upload className="h-4 w-4" />
+              <span>New Consultation</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('history')}
+              className={`flex items-center space-x-2 px-6 py-3 rounded-lg font-medium transition-all duration-200 ${
+                activeTab === 'history'
+                  ? darkMode 
+                    ? 'bg-white/20 text-white shadow-lg' 
+                    : 'bg-blue-500 text-white shadow-lg'
+                  : darkMode
+                    ? 'text-gray-300 hover:text-white hover:bg-white/10'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+              }`}
+            >
+              <History className="h-4 w-4" />
+              <span>History & Sequences ({consultations.length + userSequences.length})</span>
+            </button>
+          </div>
+        </motion.div>
+
+        {/* Tab Content */}
+        <motion.div
+          key={activeTab}
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+        >
+          {activeTab === 'new' && (
+            <div className="space-y-6">
+              {/* Firebase Test Component */}
+              <FirebaseTest />
+              
+              {/* Simple Analysis Test */}
+              <SimpleAnalysis />
+              
+
+                
+                <div className="space-y-6">
+                  {/* Sequence Type Selection */}
+                  <div>
+                    <label className={`block text-sm font-medium mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Sequence Type
+                    </label>
+                    <div className="flex space-x-6">
+                      {(['dna', 'rna', 'protein'] as const).map((type) => (
+                        <label key={type} className="flex items-center cursor-pointer">
+                          <input
+                            type="radio"
+                            name="sequenceType"
+                            value={type}
+                            checked={sequenceType === type}
+                            onChange={(e) => setSequenceType(e.target.value as any)}
+                            className="mr-3 w-4 h-4 text-blue-600"
+                          />
+                          <span className={`capitalize font-medium ${darkMode ? 'text-white' : 'text-gray-700'}`}>
+                            {type}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Main Sequence Input */}
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Primary Sequence (FASTA format accepted)
+                    </label>
+                    <textarea
+                      value={sequence}
+                      onChange={(e) => setSequence(e.target.value)}
+                      placeholder={`Enter your ${sequenceType.toUpperCase()} sequence here...\n\nExample:\n>My sequence\nATGCGTAAGCTTGCATGCCTGCAGGTCGACTCTAGAGGATCCCCGGGTACCGAGCTCGAATTC`}
+                      className={`w-full h-40 px-4 py-3 rounded-lg font-mono text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                        darkMode 
+                          ? 'bg-white/10 border border-white/20 text-white placeholder-gray-400' 
+                          : 'bg-gray-50 border border-gray-300 text-gray-900 placeholder-gray-500'
+                      }`}
+                    />
+                    <p className={`text-xs mt-2 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      Current length: {sequence.replace(/[^A-Za-z]/g, '').length} characters
+                    </p>
+                  </div>
+
+                  {/* Reference Sequence (Optional) */}
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Reference Sequence (Optional - for mutation analysis)
+                    </label>
+                    <textarea
+                      value={referenceSequence}
+                      onChange={(e) => setReferenceSequence(e.target.value)}
+                      placeholder="Enter reference sequence for comparison and mutation detection..."
+                      className={`w-full h-32 px-4 py-3 rounded-lg font-mono text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                        darkMode 
+                          ? 'bg-white/10 border border-white/20 text-white placeholder-gray-400' 
+                          : 'bg-gray-50 border border-gray-300 text-gray-900 placeholder-gray-500'
+                      }`}
+                    />
+                  </div>
+
+                  {/* Advanced Options */}
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvancedOptions(!showAdvancedOptions)}
+                      className={`flex items-center space-x-2 text-sm font-medium mb-3 ${
+                        darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-500'
+                      } transition-colors duration-200`}
+                    >
+                      <Target className="h-4 w-4" />
+                      <span>Advanced Analysis Options</span>
+                      <motion.div
+                        animate={{ rotate: showAdvancedOptions ? 180 : 0 }}
+                        transition={{ duration: 0.2 }}
+                      >
+                        <TrendingUp className="h-4 w-4" />
+                      </motion.div>
+                    </button>
+                    
+                    <motion.div
+                      initial={false}
+                      animate={{ height: showAdvancedOptions ? 'auto' : 0, opacity: showAdvancedOptions ? 1 : 0 }}
+                      transition={{ duration: 0.3 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="space-y-4 pb-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              Target Organism (for codon optimization)
+                            </label>
+                            <select
+                              value={targetOrganism}
+                              onChange={(e) => setTargetOrganism(e.target.value)}
+                              className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                                darkMode 
+                                  ? 'bg-white/10 border border-white/20 text-white' 
+                                  : 'bg-gray-50 border border-gray-300 text-gray-900'
+                              }`}
+                            >
+                              <option value="">Select organism...</option>
+                              <option value="E. coli">E. coli</option>
+                              <option value="S. cerevisiae">S. cerevisiae (Yeast)</option>
+                              <option value="Human">Human</option>
+                              <option value="Mouse">Mouse</option>
+                              <option value="Drosophila">Drosophila</option>
+                              <option value="C. elegans">C. elegans</option>
+                              <option value="Arabidopsis">Arabidopsis</option>
+                            </select>
+                          </div>
+                          
+                          <div>
+                            <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              Analysis Goal
+                            </label>
+                            <select
+                              value={analysisGoal}
+                              onChange={(e) => setAnalysisGoal(e.target.value)}
+                              className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                                darkMode 
+                                  ? 'bg-white/10 border border-white/20 text-white' 
+                                  : 'bg-gray-50 border border-gray-300 text-gray-900'
+                              }`}
+                            >
+                              <option value="">Select goal...</option>
+                              <option value="expression">Protein Expression</option>
+                              <option value="cloning">Cloning & Subcloning</option>
+                              <option value="mutation">Mutation Analysis</option>
+                              <option value="structure">Structure Prediction</option>
+                              <option value="function">Functional Analysis</option>
+                              <option value="evolution">Evolutionary Analysis</option>
+                              <option value="drug-target">Drug Target Analysis</option>
+                              <option value="diagnostics">Diagnostic Applications</option>
+                            </select>
+                          </div>
+                        </div>
+                        
+                        <div className={`p-3 rounded-lg ${
+                          darkMode ? 'bg-blue-500/10 border border-blue-500/20' : 'bg-blue-50 border border-blue-200'
+                        }`}>
+                          <div className="flex items-start space-x-2">
+                            <Info className="h-4 w-4 text-blue-400 mt-0.5 flex-shrink-0" />
+                            <div className={`text-xs ${darkMode ? 'text-blue-300' : 'text-blue-700'}`}>
+                              <p className="font-medium mb-1">Enhanced AI Analysis</p>
+                              <p>Providing target organism and analysis goal helps our AI generate more specific and actionable insights tailored to your research needs.</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  </div>
+
+                  {/* Question Input */}
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Research Question & Analysis Goals
+                    </label>
+                    <textarea
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      placeholder="Describe what you want to learn about this sequence. Examples:&#10;• Is this sequence suitable for protein expression in E. coli?&#10;• What mutations are present compared to the reference?&#10;• Can you predict the protein structure and function?&#10;• Is this sequence optimized for human expression?"
+                      className={`w-full h-32 px-4 py-3 rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                        darkMode 
+                          ? 'bg-white/10 border border-white/20 text-white placeholder-gray-400' 
+                          : 'bg-gray-50 border border-gray-300 text-gray-900 placeholder-gray-500'
+                      }`}
+                    />
+                  </div>
+
+                  {/* Submit Button */}
+                  <button
+                    onClick={performAnalysis}
+                    disabled={loading || !sequence.trim() || !question.trim()}
+                    className="w-full flex items-center justify-center space-x-3 px-6 py-4 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-xl hover:from-blue-600 hover:to-purple-700 transition-all duration-200 transform hover:scale-105 font-medium disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none shadow-lg"
+                  >
+                    {loading ? (
+                      <>
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                        <span>Analyzing Sequence...</span>
+                      </>
+                    ) : (
+                      <>
+                        <MessageSquare className="h-5 w-5" />
+                        <span>Get AI-Powered Analysis</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Analysis Results */}
+              {currentAnalysis && (
+                <div className={`rounded-2xl border p-6 ${
+                  darkMode 
+                    ? 'bg-white/10 backdrop-blur-sm border-white/20' 
+                    : 'bg-white shadow-xl border-gray-200'
+                }`}>
+                  <h2 className={`text-xl font-semibold mb-6 flex items-center ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    <CheckCircle className="h-5 w-5 mr-2 text-green-400" />
+                    Comprehensive Analysis Results
+                  </h2>
+                  {renderAnalysisResults(currentAnalysis)}
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'history' && (
+            <div className="space-y-6">
+              {/* Enhanced Analysis History */}
+              <div className={`rounded-2xl border p-6 ${
+                darkMode 
+                  ? 'bg-white/10 backdrop-blur-sm border-white/20' 
+                  : 'bg-white shadow-xl border-gray-200'
+              }`}>
+                <SimpleHistoryManager
+                  onItemSelect={(item: SimpleHistoryItem) => {
+                    // Load the selected item into the current analysis
+                    if (item.results) {
+                      setCurrentAnalysis(item.results)
+                      if (item.aiInsights) {
+                        setCurrentAIInsights(item.aiInsights)
+                      }
+                      // Switch to new tab to show the analysis
+                      setActiveTab('new')
+                      toast.success('Analysis loaded from history')
+                    }
+                  }}
+                  onItemDelete={(itemId: string) => {
+                    // Refresh the consultation history
+                    loadConsultationHistory()
+                    loadUserSequences()
+                  }}
+                  maxItems={100}
+                />
+              </div>
+
+              {/* Legacy Sections for Backward Compatibility */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* My Sequences Section */}
+                <div className={`rounded-2xl border p-6 ${
+                  darkMode 
+                    ? 'bg-white/10 backdrop-blur-sm border-white/20' 
+                    : 'bg-white shadow-xl border-gray-200'
+                }`}>
+                  <h2 className={`text-xl font-semibold mb-6 flex items-center ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    <Database className="h-5 w-5 mr-2" />
+                    Quick Access - My Sequences
+                  </h2>
+                  {renderUserSequences()}
+                </div>
+
+                {/* Recent Sessions Section */}
+                <div className={`rounded-2xl border p-6 ${
+                  darkMode 
+                    ? 'bg-white/10 backdrop-blur-sm border-white/20' 
+                    : 'bg-white shadow-xl border-gray-200'
+                }`}>
+                  <h2 className={`text-xl font-semibold mb-6 flex items-center ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    <History className="h-5 w-5 mr-2" />
+                    Recent Sessions
+                  </h2>
+                  {renderConsultationHistory()}
+                </div>
+              </div>
+            </div>
+          )}
+        </motion.div>
+      </div>
+    </div>
+  )
+}
+
+export default EnhancedSpecialist

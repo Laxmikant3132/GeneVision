@@ -9,6 +9,8 @@ import {
 } from 'firebase/auth'
 import { doc, setDoc, getDoc } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
+import { PresenceManager } from '../utils/presence'
+import { activityTracker } from '../utils/activityTracker'
 import toast from 'react-hot-toast'
 
 interface UserProfile {
@@ -20,6 +22,8 @@ interface UserProfile {
   lastLogin: Date
   analysisCount: number
   subscription: 'free' | 'pro' | 'enterprise'
+  status: 'active' | 'suspended'
+  role: 'user' | 'moderator' | 'admin'
 }
 
 interface AuthContextType {
@@ -46,6 +50,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [loading, setLoading] = useState(true)
+  const [presenceManager, setPresenceManager] = useState<PresenceManager | null>(null)
 
   const signup = async (email: string, password: string, displayName: string) => {
     try {
@@ -61,6 +66,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         lastLogin: new Date(),
         analysisCount: 0,
         subscription: 'free',
+        status: 'active',
+        role: 'user',
       }
 
       await setDoc(doc(db, 'users', user.uid), profile)
@@ -125,6 +132,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     try {
+      // Clean up presence tracking
+      if (presenceManager) {
+        presenceManager.cleanup()
+        setPresenceManager(null)
+      }
+      
       await signOut(auth)
       setUserProfile(null)
       toast.success('Logged out successfully!')
@@ -155,14 +168,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (docSnap.exists()) {
         const data = docSnap.data()
-        setUserProfile({
-          ...data,
+        // Ensure required fields exist for security rules
+        const mergedData: UserProfile = {
+          uid: data.uid || user.uid,
+          email: data.email || user.email || '',
+          displayName: data.displayName || user.displayName || 'User',
           createdAt: data.createdAt?.toDate() || new Date(),
-          lastLogin: data.lastLogin?.toDate() || new Date(),
-        } as UserProfile)
+          lastLogin: new Date(),
+          analysisCount: data.analysisCount || 0,
+          subscription: data.subscription || 'free',
+          status: data.status || 'active',
+          role: data.role || 'user'
+        }
+        setUserProfile(mergedData)
 
-        // Update last login
-        await setDoc(docRef, { lastLogin: new Date() }, { merge: true })
+        // Persist any missing defaults and update last login
+        await setDoc(docRef, { ...mergedData }, { merge: true })
       } else {
         // Create a default profile if none exists
         const defaultProfile: UserProfile = {
@@ -172,7 +193,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           createdAt: new Date(),
           lastLogin: new Date(),
           analysisCount: 0,
-          subscription: 'free'
+          subscription: 'free',
+          status: 'active',
+          role: 'user'
         }
         await setDoc(docRef, defaultProfile)
         setUserProfile(defaultProfile)
@@ -187,7 +210,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         createdAt: new Date(),
         lastLogin: new Date(),
         analysisCount: 0,
-        subscription: 'free'
+        subscription: 'free',
+        status: 'active',
+        role: 'user'
       })
     }
   }
@@ -197,13 +222,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCurrentUser(user)
       if (user) {
         await fetchUserProfile(user)
+        // Initialize presence tracking
+        const manager = new PresenceManager(user)
+        setPresenceManager(manager)
+        
+        // Initialize activity tracking
+        activityTracker.setUser(user)
+        activityTracker.trackAction('user_login')
       } else {
+        // Clean up presence tracking
+        if (presenceManager) {
+          presenceManager.cleanup()
+          setPresenceManager(null)
+        }
         setUserProfile(null)
+        
+        // Clean up activity tracking
+        activityTracker.setUser(null)
       }
       setLoading(false)
     })
 
-    return unsubscribe
+    return () => {
+      unsubscribe()
+      // Clean up presence tracking on unmount
+      if (presenceManager) {
+        presenceManager.cleanup()
+      }
+    }
   }, [])
 
   const value: AuthContextType = {

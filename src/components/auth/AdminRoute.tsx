@@ -8,7 +8,7 @@ interface AdminRouteProps {
 }
 
 const AdminRoute: React.FC<AdminRouteProps> = ({ children }) => {
-  const { currentUser, loading } = useAuth()
+  const { currentUser, userProfile, loading } = useAuth()
   const location = useLocation()
 
   if (loading) {
@@ -23,8 +23,9 @@ const AdminRoute: React.FC<AdminRouteProps> = ({ children }) => {
     return <Navigate to="/login" state={{ from: location }} replace />
   }
 
-  const isAdmin = currentUser.email === ADMIN_EMAIL
-  if (!isAdmin) {
+  // Allow if ADMIN_EMAIL (bootstrap) or Firestore role is admin/moderator
+  const isAdminOrMod = currentUser.email === ADMIN_EMAIL || userProfile?.role === 'admin' || userProfile?.role === 'moderator'
+  if (!isAdminOrMod) {
     return <Navigate to="/dashboard" replace />
   }
 

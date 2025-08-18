@@ -1,0 +1,68 @@
+{
+  "rules": {
+    "presence": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid == $uid",
+        ".validate": "newData.hasChildren(['uid', 'email', 'displayName', 'isOnline', 'lastSeen']) && newData.child('uid').val() == auth.uid && newData.child('email').val() == auth.token.email"
+      }
+    },
+    "userActivity": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid == $uid || auth.token.email == 'laxmikanttalli303@gmail.com')",
+        ".write": "auth != null && auth.uid == $uid",
+        "sessions": {
+          "$sessionId": {
+            ".validate": "newData.hasChildren(['startTime', 'userAgent']) && newData.child('userId').val() == auth.uid"
+          }
+        },
+        "pageViews": {
+          "$timestamp": {
+            ".validate": "newData.hasChildren(['page', 'timestamp']) && newData.child('userId').val() == auth.uid"
+          }
+        }
+      }
+    },
+    "systemStatus": {
+      ".read": "auth != null",
+      ".write": "auth != null && auth.token.email == 'laxmikanttalli303@gmail.com'"
+    },
+    "notifications": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": "auth != null && (auth.uid == $uid || auth.token.email == 'laxmikanttalli303@gmail.com')",
+        "$notificationId": {
+          ".validate": "newData.hasChildren(['type', 'message', 'timestamp', 'read']) && newData.child('userId').val() == $uid"
+        }
+      }
+    },
+    "chatRooms": {
+      "support": {
+        ".read": "auth != null",
+        "messages": {
+          "$messageId": {
+            ".write": "auth != null && newData.child('userId').val() == auth.uid",
+            ".validate": "newData.hasChildren(['userId', 'message', 'timestamp']) && newData.child('message').val().length <= 1000"
+          }
+        }
+      }
+    },
+    "analytics": {
+      "realtime": {
+        ".read": "auth != null && auth.token.email == 'laxmikanttalli303@gmail.com'",
+        ".write": "auth != null"
+      }
+    },
+    "rateLimiting": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": "auth != null && auth.uid == $uid",
+        "requests": {
+          "$timestamp": {
+            ".validate": "newData.hasChildren(['endpoint', 'count']) && $timestamp >= now - 3600000"
+          }
+        }
+      }
+    }
+  }
+}
