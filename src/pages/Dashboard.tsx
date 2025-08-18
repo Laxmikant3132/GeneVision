@@ -18,7 +18,6 @@ import { collection, getDocs, orderBy, query, where } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { calculateGCContent } from '../utils/bioinformatics'
 
-
 interface UserSequence {
   id: string
   sequence: string
@@ -30,7 +29,6 @@ interface UserSequence {
 const Dashboard: React.FC = () => {
   const { userProfile, currentUser } = useAuth()
   const { sessions } = useAnalysis()
-  const [consultations, setConsultations] = useState<any[]>([])
 
   const [userSequences, setUserSequences] = useState<UserSequence[]>([])
   const [seqLoading, setSeqLoading] = useState(false)
@@ -43,7 +41,8 @@ const Dashboard: React.FC = () => {
       try {
         const q = query(
           collection(db, 'sequences'),
-          where('uid', '==', currentUser.uid)
+          where('uid', '==', currentUser.uid),
+          orderBy('createdAt', 'desc')
         )
         const snap = await getDocs(q)
         const rows: UserSequence[] = []
@@ -53,31 +52,9 @@ const Dashboard: React.FC = () => {
           const gc = data.type !== 'protein' ? calculateGCContent(data.sequence, data.type).gcContent : undefined
           rows.push({ id: d.id, sequence: data.sequence, type: data.type, createdAt: created, gc })
         })
-        // Sort client-side by createdAt desc
-        rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
         setUserSequences(rows)
-
-        // Also load consultations directly
-        const consultQuery = query(
-          collection(db, 'consultations'),
-          where('userId', '==', currentUser.uid)
-        )
-        const consultSnap = await getDocs(consultQuery)
-        const consultRows: any[] = []
-        consultSnap.forEach((d) => {
-          const data = d.data()
-          consultRows.push({
-            id: d.id,
-            ...data,
-            createdAt: data.createdAt?.toDate?.() || new Date()
-          })
-        })
-        consultRows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-        setConsultations(consultRows)
-        console.log('Dashboard loaded consultations:', consultRows)
-
       } catch (e) {
-        console.error('Dashboard loading error:', e)
+        console.error(e)
       } finally {
         setSeqLoading(false)
       }
@@ -126,17 +103,7 @@ const Dashboard: React.FC = () => {
     }
   ]
 
-  // Use consultations if available, otherwise fall back to sessions
-  const recentSessions = consultations.length > 0 
-    ? consultations.slice(0, 5).map(c => ({
-        id: c.id,
-        name: `${c.sequenceType?.toUpperCase() || 'DNA'} Analysis`,
-        sequences: [{ type: c.sequenceType || 'dna' }],
-        results: [{ type: 'analysis' }],
-        createdAt: c.createdAt,
-        updatedAt: c.createdAt
-      }))
-    : sessions.slice(0, 5)
+  const recentSessions = sessions.slice(0, 5)
 
   const formatDate = (value: any) => {
     try {

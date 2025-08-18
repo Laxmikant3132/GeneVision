@@ -10,8 +10,8 @@ import {
   Home, 
   BarChart3, 
   FlaskConical,
-  Settings,
-  MessageSquare
+  Lightbulb,
+  Settings
 } from 'lucide-react'
 import { ADMIN_EMAIL } from '../../config/appConfig'
 
@@ -39,7 +39,7 @@ const Navbar: React.FC = () => {
     ...(currentUser ? [
       { path: '/dashboard', label: 'Dashboard', icon: BarChart3 },
       { path: '/analysis', label: 'Analysis', icon: FlaskConical },
-      { path: '/specialist', label: 'Specialist', icon: MessageSquare },
+      { path: '/specialist', label: 'Specialist', icon: Lightbulb },
       ...(isAdmin ? [{ path: '/admin', label: 'Admin', icon: Settings }] : []),
     ] : [])
   ]

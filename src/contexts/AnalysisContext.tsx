@@ -139,59 +139,11 @@ export const AnalysisProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             updatedAt: data.updatedAt?.toDate() || new Date(),
           } as AnalysisSession)
         })
-
-        // Also load consultations as sessions
-        try {
-          const consultationsQuery = query(
-            collection(db, 'consultations'),
-            where('userId', '==', currentUser.uid),
-            orderBy('createdAt', 'desc')
-          )
-          const consultationsSnapshot = await getDocs(consultationsQuery)
-          
-          consultationsSnapshot.forEach((doc) => {
-            const data = doc.data()
-            // Convert consultation to session format
-            loadedSessions.push({
-              id: doc.id,
-              name: `${data.sequenceType?.toUpperCase() || 'DNA'} Analysis - ${data.createdAt?.toDate()?.toLocaleDateString() || 'Unknown'}`,
-              sequences: [{
-                id: doc.id + '_seq',
-                name: `${data.sequenceType?.toUpperCase() || 'DNA'} Sequence`,
-                sequence: data.sequence || '',
-                type: data.sequenceType || 'dna',
-                uploadedAt: data.createdAt?.toDate() || new Date()
-              }],
-              results: [{
-                id: doc.id + '_result',
-                sequenceId: doc.id + '_seq',
-                type: 'gc-content',
-                result: data.analysis || {},
-                createdAt: data.createdAt?.toDate() || new Date(),
-                processingTime: 0,
-                aiInsights: data.aiInsights || []
-              }],
-              createdAt: data.createdAt?.toDate() || new Date(),
-              updatedAt: data.createdAt?.toDate() || new Date(),
-              userId: data.userId,
-              isPublic: false,
-              tags: ['consultation', data.sequenceType || 'dna']
-            })
-          })
-        } catch (consultationError) {
-          console.error('Error loading consultations:', consultationError)
-        }
         
-        // Merge with any locally cached sessions and de-duplicate by id
-        const existing = sessions
-        const byId: Record<string, AnalysisSession> = {}
-        for (const s of existing) byId[s.id] = s
-        for (const s of loadedSessions) byId[s.id] = s
-        const mergedSessions = Object.values(byId).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-        setSessions(mergedSessions)
+        setSessions(loadedSessions)
         
         // Save to local storage as backup
-        localStorage.setItem('geneVision_sessions', JSON.stringify(mergedSessions))
+        localStorage.setItem('geneVision_sessions', JSON.stringify(loadedSessions))
         
       } catch (error) {
         console.error('Error loading sessions from Firebase:', error)
@@ -231,9 +183,13 @@ export const AnalysisProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       try {
         // Try to save to Firebase if logged in
         if (currentUser) {
+          // Exclude local id before saving; Firestore rejects undefined values
+          const { id: _localId, ...sessionData } = newSession
           const docRef = await addDoc(collection(db, 'analysisSessions'), {
-            ...newSession,
-            id: undefined // Remove local ID for Firebase
+            ...sessionData,
+            // Use server timestamps for consistency and proper ordering
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
           })
           
           // Update with Firebase ID

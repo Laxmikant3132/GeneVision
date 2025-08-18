@@ -1,664 +1,357 @@
-import React, { useState, useEffect } from 'react'
-import { motion } from 'framer-motion'
-import { useAuth } from '../contexts/AuthContext'
-import { 
-  collection, 
-  addDoc, 
-  query, 
-  where, 
-  orderBy, 
-  getDocs,
-  serverTimestamp 
-} from 'firebase/firestore'
-import { db } from '../lib/firebase'
-import { 
-  calculateGCContent, 
-  analyzeCodonUsage, 
-  compareMutations,
-  validateSequence,
-  normalizeInputSequence,
-  translateDNA,
-  findORFs
-} from '../utils/bioinformatics'
-import { 
-  Upload, 
-  Dna, 
-  MessageSquare, 
-  BarChart3, 
-  History,
-  Loader2,
-  AlertCircle,
-  CheckCircle,
-  FileText,
-  Microscope
+import React, { useMemo, useState } from 'react'
+import {
+  Lightbulb,
+  Beaker,
+  Dna,
+  BarChart3,
+  Rocket,
+  Eraser,
+  Info,
+  ListChecks,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
+import {
+  validateSequence,
+  normalizeInputSequence,
+  calculateGCContent,
+  analyzeCodonUsage,
+  translateDNA,
+  findORFs,
+} from '../utils/bioinformatics'
 
-interface Consultation {
-  id: string
-  sequence: string
-  sequenceType: 'dna' | 'rna' | 'protein'
-  question: string
-  analysis: {
-    gcContent?: any
-    codonUsage?: any
-    translation?: any
-    orfs?: any
-    mutations?: any
-  }
-  aiInsights: string[]
-  createdAt: Date
+import SpecialistChatbot from '../components/analysis/SpecialistChatbot'
+
+// Minimal AA properties for quick protein summaries in-page (kept small and local)
+const AA_HYDROPATHY: Record<string, number> = {
+  A: 1.8, R: -4.5, N: -3.5, D: -3.5, C: 2.5, Q: -3.5, E: -3.5, G: -0.4,
+  H: -3.2, I: 4.5, L: 3.8, K: -3.9, M: 1.9, F: 2.8, P: -1.6, S: -0.8,
+  T: -0.7, W: -0.9, Y: -1.3, V: 4.2,
 }
 
-interface ProteinStructure {
-  pdbId: string
-  title: string
-  resolution?: number
-}
+// Simple utility to count characters
+const countChars = (s: string) => s.split('').reduce<Record<string, number>>((acc, ch) => {
+  acc[ch] = (acc[ch] || 0) + 1
+  return acc
+}, {})
+
+const percent = (num: number, den: number) => (den === 0 ? 0 : Math.round((num / den) * 1000) / 10)
 
 const Specialist: React.FC = () => {
-  const { currentUser } = useAuth()
-  const [activeTab, setActiveTab] = useState<'new' | 'history'>('new')
-  const [sequence, setSequence] = useState('')
-  const [sequenceType, setSequenceType] = useState<'dna' | 'rna' | 'protein'>('dna')
-  const [question, setQuestion] = useState('')
-  const [referenceSequence, setReferenceSequence] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [consultations, setConsultations] = useState<Consultation[]>([])
-  const [currentAnalysis, setCurrentAnalysis] = useState<any>(null)
-  const [proteinStructure, setProteinStructure] = useState<ProteinStructure | null>(null)
+  const [seqType, setSeqType] = useState<'dna' | 'rna' | 'protein'>('dna')
+  const [raw, setRaw] = useState('')
+  const [clean, setClean] = useState('')
 
-  // Load user's consultation history
-  useEffect(() => {
-    if (currentUser) {
-      loadConsultationHistory()
-    }
-  }, [currentUser])
-
-  const loadConsultationHistory = async () => {
-    if (!currentUser) return
-
-    try {
-      const q = query(
-        collection(db, 'consultations'),
-        where('userId', '==', currentUser.uid),
-        orderBy('createdAt', 'desc')
-      )
-      const snapshot = await getDocs(q)
-      const history: Consultation[] = []
-      
-      snapshot.forEach((doc) => {
-        const data = doc.data()
-        history.push({
-          id: doc.id,
-          ...data,
-          createdAt: data.createdAt?.toDate() || new Date()
-        } as Consultation)
-      })
-      
-      setConsultations(history)
-    } catch (error) {
-      console.error('Error loading consultation history:', error)
-    }
-  }
-
-  const generateAIInsights = (analysisType: string, result: any, question: string): string[] => {
-    const insights: string[] = []
-    
-    // Basic insights based on analysis type
-    if (analysisType === 'gc-content' && result.gcContent !== undefined) {
-      if (result.gcContent > 60) {
-        insights.push('High GC content (>60%) suggests thermostable properties and potential for strong secondary structures.')
-      } else if (result.gcContent < 40) {
-        insights.push('Low GC content (<40%) may indicate AT-rich regions, common in regulatory sequences.')
-      } else {
-        insights.push('Moderate GC content suggests balanced nucleotide composition.')
-      }
-      
-      if (Math.abs(result.gcSkew) > 0.1) {
-        insights.push('Significant GC skew detected, which may indicate replication origin or transcriptional bias.')
-      }
-    }
-
-    if (analysisType === 'codon-usage' && result.totalCodons > 0) {
-      insights.push(`Analysis of ${result.totalCodons} codons reveals codon usage patterns.`)
-      if (result.mostFrequent.length > 0) {
-        insights.push(`Most frequent codons: ${result.mostFrequent.slice(0, 3).join(', ')}`)
-      }
-      if (result.codonBias > 0.02) {
-        insights.push('Significant codon bias detected, suggesting possible optimization for specific expression systems.')
-      }
-    }
-
-    if (analysisType === 'translation' && result.protein) {
-      if (result.hydropathy > 1) {
-        insights.push('Hydrophobic protein detected - likely membrane-associated or structural protein.')
-      } else if (result.hydropathy < -1) {
-        insights.push('Hydrophilic protein detected - likely soluble or extracellular protein.')
-      }
-      
-      if (result.molecularWeight > 50000) {
-        insights.push('Large protein (>50kDa) - may have multiple domains or complex structure.')
-      }
-    }
-
-    if (analysisType === 'mutations' && result.totalMutations > 0) {
-      insights.push(`${result.totalMutations} mutations detected with ${result.mutationRate.toFixed(2)}% mutation rate.`)
-      const missense = result.mutations.filter((m: any) => m.effect === 'missense').length
-      const synonymous = result.mutations.filter((m: any) => m.effect === 'synonymous').length
-      if (missense > synonymous) {
-        insights.push('More missense than synonymous mutations - may indicate functional impact.')
-      }
-    }
-
-    // Question-specific insights
-    if (question.toLowerCase().includes('disease') || question.toLowerCase().includes('pathogen')) {
-      insights.push('For disease-related analysis, consider comparing with known pathogenic variants.')
-    }
-    
-    if (question.toLowerCase().includes('expression') || question.toLowerCase().includes('protein')) {
-      insights.push('For expression analysis, consider codon optimization and secondary structure predictions.')
-    }
-
-    if (question.toLowerCase().includes('evolution') || question.toLowerCase().includes('phylogen')) {
-      insights.push('For evolutionary analysis, consider comparing with homologous sequences from different species.')
-    }
-
-    return insights.length > 0 ? insights : ['Analysis completed. Consider the numerical results in context of your research question.']
-  }
-
-  const searchProteinStructure = async (sequence: string): Promise<ProteinStructure | null> => {
-    // This is a simplified mock - in reality, you'd use PDB API or BLAST
-    // For demo purposes, we'll return a mock structure for certain sequences
-    if (sequence.length > 50 && sequenceType === 'protein') {
-      return {
-        pdbId: '1ABC',
-        title: 'Example Protein Structure',
-        resolution: 2.1
-      }
-    }
-    return null
-  }
-
-  const performAnalysis = async () => {
-    if (!sequence.trim()) {
-      toast.error('Please enter a sequence')
+  const analyze = () => {
+    const normalized = normalizeInputSequence(raw, seqType)
+    if (!normalized) {
+      toast.error('Please paste a sequence to analyze.')
       return
     }
-
-    if (!question.trim()) {
-      toast.error('Please enter your question')
+    if (!validateSequence(normalized, seqType)) {
+      toast.error(`The input is not a valid ${seqType.toUpperCase()} sequence.`)
       return
     }
-
-    setLoading(true)
-    try {
-      const normalizedSequence = normalizeInputSequence(sequence, sequenceType)
-      
-      if (!validateSequence(normalizedSequence, sequenceType)) {
-        toast.error(`Invalid ${sequenceType.toUpperCase()} sequence`)
-        return
-      }
-
-      const analysis: any = {}
-      const allInsights: string[] = []
-
-      // Perform different analyses based on sequence type
-      if (sequenceType === 'dna' || sequenceType === 'rna') {
-        // GC Content Analysis
-        analysis.gcContent = calculateGCContent(normalizedSequence, sequenceType)
-        allInsights.push(...generateAIInsights('gc-content', analysis.gcContent, question))
-
-        // Codon Usage Analysis
-        analysis.codonUsage = analyzeCodonUsage(normalizedSequence, sequenceType)
-        allInsights.push(...generateAIInsights('codon-usage', analysis.codonUsage, question))
-
-        // Translation Analysis
-        analysis.translation = translateDNA(normalizedSequence, 0, sequenceType)
-        allInsights.push(...generateAIInsights('translation', analysis.translation, question))
-
-        // ORF Analysis
-        analysis.orfs = findORFs(normalizedSequence, sequenceType)
-        if (analysis.orfs.length > 0) {
-          allInsights.push(`Found ${analysis.orfs.length} open reading frames.`)
-        }
-
-        // Mutation Analysis (if reference sequence provided)
-        if (referenceSequence.trim()) {
-          const normalizedRef = normalizeInputSequence(referenceSequence, sequenceType)
-          if (validateSequence(normalizedRef, sequenceType)) {
-            analysis.mutations = compareMutations(normalizedRef, normalizedSequence)
-            allInsights.push(...generateAIInsights('mutations', analysis.mutations, question))
-          }
-        }
-      } else if (sequenceType === 'protein') {
-        // For protein sequences, we can still do some analysis
-        analysis.composition = {}
-        for (const aa of normalizedSequence) {
-          analysis.composition[aa] = (analysis.composition[aa] || 0) + 1
-        }
-        allInsights.push(`Protein sequence of ${normalizedSequence.length} amino acids analyzed.`)
-        
-        // Search for protein structure
-        const structure = await searchProteinStructure(normalizedSequence)
-        if (structure) {
-          setProteinStructure(structure)
-          allInsights.push(`Potential protein structure found: ${structure.title}`)
-        }
-      }
-
-      setCurrentAnalysis(analysis)
-
-      // Save consultation to Firebase
-      const consultation = {
-        userId: currentUser?.uid,
-        userEmail: currentUser?.email,
-        sequence: normalizedSequence,
-        sequenceType,
-        question,
-        referenceSequence: referenceSequence.trim(),
-        analysis,
-        aiInsights: allInsights,
-        createdAt: serverTimestamp()
-      }
-
-      await addDoc(collection(db, 'consultations'), consultation)
-      
-      // Reload consultation history
-      await loadConsultationHistory()
-      
-      toast.success('Analysis completed successfully!')
-      
-    } catch (error) {
-      console.error('Analysis error:', error)
-      toast.error('Analysis failed. Please try again.')
-    } finally {
-      setLoading(false)
-    }
+    setClean(normalized)
+    toast.success('Sequence analyzed!')
   }
 
-  const renderAnalysisResults = (analysis: any) => {
-    if (!analysis) return null
+  const length = clean.length
 
-    return (
-      <div className="space-y-6">
-        {analysis.gcContent && (
-          <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
-            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-              <BarChart3 className="h-5 w-5 mr-2" />
-              GC Content Analysis
-            </h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="text-center">
-                <div className="text-2xl font-bold text-blue-400">{analysis.gcContent.gcContent}%</div>
-                <div className="text-sm text-gray-300">GC Content</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-green-400">{analysis.gcContent.atContent}%</div>
-                <div className="text-sm text-gray-300">AT Content</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-purple-400">{analysis.gcContent.gcSkew}</div>
-                <div className="text-sm text-gray-300">GC Skew</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-yellow-400">{analysis.gcContent.length}</div>
-                <div className="text-sm text-gray-300">Length</div>
-              </div>
-            </div>
-          </div>
-        )}
+  // DNA/RNA metrics
+  const gc = useMemo(() => {
+    if (!clean || seqType === 'protein') return null
+    return calculateGCContent(clean, seqType)
+  }, [clean, seqType])
 
-        {analysis.codonUsage && (
-          <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
-            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-              <Dna className="h-5 w-5 mr-2" />
-              Codon Usage Analysis
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <h4 className="text-sm font-medium text-gray-300 mb-2">Most Frequent Codons</h4>
-                <div className="space-y-1">
-                  {analysis.codonUsage.mostFrequent.slice(0, 5).map((codon: string, index: number) => (
-                    <div key={index} className="text-sm text-white bg-white/5 px-2 py-1 rounded">
-                      {codon}: {analysis.codonUsage.codons[codon]} times
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <h4 className="text-sm font-medium text-gray-300 mb-2">Statistics</h4>
-                <div className="space-y-2">
-                  <div className="text-sm text-white">Total Codons: {analysis.codonUsage.totalCodons}</div>
-                  <div className="text-sm text-white">Codon Bias: {analysis.codonUsage.codonBias}</div>
-                  <div className="text-sm text-white">Unique Codons: {Object.keys(analysis.codonUsage.codons).length}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+  const codon = useMemo(() => {
+    if (!clean || seqType === 'protein') return null
+    // analyzeCodonUsage expects groups of 3; it will ignore trailing <3
+    return analyzeCodonUsage(clean, seqType)
+  }, [clean, seqType])
 
-        {analysis.translation && (
-          <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
-            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-              <Microscope className="h-5 w-5 mr-2" />
-              Translation Analysis
-            </h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-              <div className="text-center">
-                <div className="text-2xl font-bold text-blue-400">{analysis.translation.length}</div>
-                <div className="text-sm text-gray-300">AA Length</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-green-400">{analysis.translation.molecularWeight}</div>
-                <div className="text-sm text-gray-300">MW (Da)</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-purple-400">{analysis.translation.isoelectricPoint}</div>
-                <div className="text-sm text-gray-300">pI</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-yellow-400">{analysis.translation.hydropathy}</div>
-                <div className="text-sm text-gray-300">Hydropathy</div>
-              </div>
-            </div>
-            <div>
-              <h4 className="text-sm font-medium text-gray-300 mb-2">Protein Sequence</h4>
-              <div className="bg-black/20 p-3 rounded-lg font-mono text-sm text-white break-all">
-                {analysis.translation.protein}
-              </div>
-            </div>
-          </div>
-        )}
+  const orfs = useMemo(() => {
+    if (!clean || seqType === 'protein') return []
+    return findORFs(clean, seqType).slice(0, 3)
+  }, [clean, seqType])
 
-        {analysis.mutations && analysis.mutations.totalMutations > 0 && (
-          <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
-            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-              <AlertCircle className="h-5 w-5 mr-2" />
-              Mutation Analysis
-            </h3>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
-              <div className="text-center">
-                <div className="text-2xl font-bold text-red-400">{analysis.mutations.totalMutations}</div>
-                <div className="text-sm text-gray-300">Total Mutations</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-orange-400">{analysis.mutations.mutationRate.toFixed(2)}%</div>
-                <div className="text-sm text-gray-300">Mutation Rate</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-yellow-400">
-                  {analysis.mutations.mutations.filter((m: any) => m.effect === 'missense').length}
-                </div>
-                <div className="text-sm text-gray-300">Missense</div>
-              </div>
-            </div>
-            <div className="max-h-40 overflow-y-auto">
-              <h4 className="text-sm font-medium text-gray-300 mb-2">Mutations Found</h4>
-              {analysis.mutations.mutations.slice(0, 10).map((mutation: any, index: number) => (
-                <div key={index} className="text-sm text-white bg-white/5 px-2 py-1 rounded mb-1">
-                  Position {mutation.position + 1}: {mutation.original} → {mutation.mutated} ({mutation.effect})
-                </div>
-              ))}
-              {analysis.mutations.mutations.length > 10 && (
-                <div className="text-sm text-gray-400 mt-2">
-                  ... and {analysis.mutations.mutations.length - 10} more mutations
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+  const translation = useMemo(() => {
+    if (!clean || seqType === 'protein') return null
+    // Frame 0 translation summary
+    return translateDNA(clean, 0, seqType)
+  }, [clean, seqType])
 
-        {proteinStructure && (
-          <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
-            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-              <Microscope className="h-5 w-5 mr-2" />
-              Protein Structure
-            </h3>
-            <div className="text-white">
-              <p><strong>PDB ID:</strong> {proteinStructure.pdbId}</p>
-              <p><strong>Title:</strong> {proteinStructure.title}</p>
-              {proteinStructure.resolution && (
-                <p><strong>Resolution:</strong> {proteinStructure.resolution} Å</p>
-              )}
-              <div className="mt-4 p-4 bg-black/20 rounded-lg">
-                <div className="text-center text-gray-300">
-                  3D Structure Viewer would be rendered here using 3Dmol.js
-                  <br />
-                  <small>(Integration with PDB database required)</small>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    )
+  // Protein summaries
+  const proteinSummary = useMemo(() => {
+    if (!clean || seqType !== 'protein') return null
+    const comp = countChars(clean)
+    const total = clean.length
+    const avgHydro =
+      total === 0
+        ? 0
+        : Math.round(
+            (clean
+              .split('')
+              .reduce((sum, aa) => sum + (AA_HYDROPATHY[aa] ?? 0), 0) /
+              total) * 100
+          ) / 100
+
+    // Top 5 residues by count
+    const top = Object.entries(comp)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+
+    return { comp, total, avgHydro, top }
+  }, [clean, seqType])
+
+  const useExamples = (type: 'dna' | 'rna' | 'protein') => {
+    setSeqType(type)
+    if (type === 'dna') {
+      setRaw('>Example DNA\nATGGCCATTGTAATGGGCCGCTGAAAGGGTGCCCGATAG')
+    } else if (type === 'rna') {
+      setRaw('>Example RNA\nAUGGCCAUUGUAAUGGGCCGCUGAAAGGGUGCCCGAUAG')
+    } else {
+      setRaw('>Example Protein\nMKWVTFISLLFLFSSAYS')
+    }
+    setClean('')
   }
 
   return (
-    <div className="min-h-screen py-8 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8 }}
-          className="mb-8"
-        >
-          <h1 className="text-3xl md:text-4xl font-bold text-white mb-2">
-            Specialist Consultation
-          </h1>
-          <p className="text-gray-300 text-lg">
-            Upload sequences, ask questions, and get AI-powered bioinformatics analysis
-          </p>
-        </motion.div>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 text-white">
+      {/* Header */}
+      <section className="mb-8">
+        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/20 text-white/80 text-sm mb-3">
+          <Lightbulb className="h-4 w-4" />
+          Specialist Sequence Explainer
+        </div>
+        <h1 className="text-3xl md:text-4xl font-extrabold">Understand Your Sequences</h1>
+        <p className="text-white/80 mt-2 max-w-2xl">
+          Paste a DNA, RNA, or Protein sequence. Get plain-language explanations with quick visuals:
+          composition, GC content, ORFs, translation, and more.
+        </p>
+      </section>
 
-        {/* Navigation Tabs */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.1 }}
-          className="mb-8"
-        >
-          <div className="flex space-x-1 bg-white/10 backdrop-blur-sm rounded-xl p-1">
-            <button
-              onClick={() => setActiveTab('new')}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all duration-200 ${
-                activeTab === 'new'
-                  ? 'bg-white/20 text-white shadow-lg'
-                  : 'text-gray-300 hover:text-white hover:bg-white/10'
-              }`}
-            >
-              <Upload className="h-4 w-4" />
-              <span>New Consultation</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('history')}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all duration-200 ${
-                activeTab === 'history'
-                  ? 'bg-white/20 text-white shadow-lg'
-                  : 'text-gray-300 hover:text-white hover:bg-white/10'
-              }`}
-            >
-              <History className="h-4 w-4" />
-              <span>Consultation History</span>
-            </button>
+      {/* Controls */}
+      <section className="rounded-2xl border border-white/20 bg-white/10 backdrop-blur-md p-5 mb-6">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+          <div className="flex items-center gap-2">
+            <Dna className="h-5 w-5 text-purple-300" />
+            <span className="font-medium">Sequence Type</span>
           </div>
-        </motion.div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setSeqType('dna')}
+              className={`px-3 py-1.5 rounded-lg border ${seqType === 'dna' ? 'bg-white/20 border-white/40' : 'bg-white/5 border-white/20 hover:bg-white/10'}`}
+            >DNA</button>
+            <button
+              onClick={() => setSeqType('rna')}
+              className={`px-3 py-1.5 rounded-lg border ${seqType === 'rna' ? 'bg-white/20 border-white/40' : 'bg-white/5 border-white/20 hover:bg-white/10'}`}
+            >RNA</button>
+            <button
+              onClick={() => setSeqType('protein')}
+              className={`px-3 py-1.5 rounded-lg border ${seqType === 'protein' ? 'bg-white/20 border-white/40' : 'bg-white/5 border-white/20 hover:bg-white/10'}`}
+            >Protein</button>
+          </div>
+        </div>
 
-        {/* Tab Content */}
-        <motion.div
-          key={activeTab}
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-        >
-          {activeTab === 'new' && (
-            <div className="space-y-6">
-              {/* Input Form */}
-              <div className="bg-white/10 backdrop-blur-sm rounded-2xl border border-white/20 p-6">
-                <h2 className="text-xl font-semibold text-white mb-6 flex items-center">
-                  <FileText className="h-5 w-5 mr-2" />
-                  Sequence Input & Question
-                </h2>
-                
-                <div className="space-y-4">
-                  {/* Sequence Type Selection */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
-                      Sequence Type
-                    </label>
-                    <div className="flex space-x-4">
-                      {(['dna', 'rna', 'protein'] as const).map((type) => (
-                        <label key={type} className="flex items-center">
-                          <input
-                            type="radio"
-                            name="sequenceType"
-                            value={type}
-                            checked={sequenceType === type}
-                            onChange={(e) => setSequenceType(e.target.value as any)}
-                            className="mr-2"
-                          />
-                          <span className="text-white capitalize">{type}</span>
-                        </label>
-                      ))}
+        <div className="grid grid-cols-1 gap-3">
+          <label className="text-sm text-white/80">Paste sequence (plain or FASTA)</label>
+          <textarea
+            value={raw}
+            onChange={(e) => setRaw(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-purple-500 min-h-[140px]"
+            placeholder={'>FASTA header optional\nATGC...'}
+          />
+          <div className="flex flex-wrap gap-2 justify-between">
+            <div className="flex gap-2">
+              <button onClick={() => useExamples('dna')} className="px-3 py-1.5 text-sm rounded-lg bg-white/5 border border-white/20 hover:bg-white/10">DNA example</button>
+              <button onClick={() => useExamples('rna')} className="px-3 py-1.5 text-sm rounded-lg bg-white/5 border border-white/20 hover:bg-white/10">RNA example</button>
+              <button onClick={() => useExamples('protein')} className="px-3 py-1.5 text-sm rounded-lg bg-white/5 border border-white/20 hover:bg-white/10">Protein example</button>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => { setRaw(''); setClean('') }} className="inline-flex items-center gap-1 px-3 py-1.5 text-sm rounded-lg bg-white/5 border border-white/20 hover:bg-white/10">
+                <Eraser className="h-4 w-4" /> Clear
+              </button>
+              <button onClick={analyze} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700">
+                <Rocket className="h-4 w-4" /> Analyze
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Results and Explanations */}
+      {!clean ? (
+        <div className="rounded-2xl border border-dashed border-white/20 bg-white/5 p-8 text-white/70 text-center">
+          <Dna className="h-8 w-8 mx-auto mb-3" />
+          Paste a sequence and click Analyze to see explanations here.
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {/* Overview */}
+          <section className="rounded-2xl border border-white/20 bg-white/10 backdrop-blur-md p-5">
+            <div className="flex items-center gap-2 mb-2">
+              <Info className="h-5 w-5 text-blue-300" />
+              <h2 className="text-lg font-semibold">Overview</h2>
+            </div>
+            <p className="text-white/80 mb-2">
+              Detected {seqType.toUpperCase()} sequence with length <span className="font-semibold text-white">{length}</span>.
+            </p>
+            {seqType !== 'protein' ? (
+              <p className="text-white/70 text-sm">
+                We compute base composition, GC content, potential open reading frames (ORFs), and translate in frame 1 (0-based).
+              </p>
+            ) : (
+              <p className="text-white/70 text-sm">
+                We summarize amino-acid composition and average hydropathy (Kyte-Doolittle scale, approximate).
+              </p>
+            )}
+          </section>
+
+          {/* Composition */}
+          <section className="rounded-2xl border border-white/20 bg-white/10 backdrop-blur-md p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <BarChart3 className="h-5 w-5 text-purple-300" />
+              <h2 className="text-lg font-semibold">Composition</h2>
+            </div>
+
+            {seqType !== 'protein' && gc && (
+              <div className="space-y-2">
+                {/* Bars */}
+                {(['A', gc.composition['U'] !== undefined ? 'U' : 'T', 'G', 'C'] as const).map((base) => {
+                  const count = (gc.composition as any)[base] || 0
+                  const p = percent(count, gc.length)
+                  return (
+                    <div key={base}>
+                      <div className="flex justify-between text-sm text-white/80">
+                        <span>{base}</span>
+                        <span>{count} ({p}%)</span>
+                      </div>
+                      <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                        <div className="h-full bg-gradient-to-r from-blue-500 to-purple-600" style={{ width: `${p}%` }} />
+                      </div>
                     </div>
-                  </div>
+                  )
+                })}
 
-                  {/* Main Sequence Input */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
-                      Sequence (FASTA format accepted)
-                    </label>
-                    <textarea
-                      value={sequence}
-                      onChange={(e) => setSequence(e.target.value)}
-                      placeholder={`Enter your ${sequenceType.toUpperCase()} sequence here...`}
-                      className="w-full h-32 px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
-                    />
+                {/* GC content summary */}
+                <div className="mt-4 p-3 rounded-xl bg-blue-500/10 border border-blue-500/20">
+                  <div className="flex items-center gap-2 mb-1"><Beaker className="h-4 w-4 text-blue-300" /><span className="font-medium">GC Content</span></div>
+                  <div className="text-white/80">GC: <span className="font-semibold text-white">{gc.gcContent}%</span> • AT/AU: <span className="font-semibold text-white">{gc.atContent}%</span> • GC skew: {gc.gcSkew}</div>
+                  <div className="mt-2 h-2 bg-white/10 rounded-full overflow-hidden">
+                    <div className="h-full bg-gradient-to-r from-emerald-400 to-emerald-600" style={{ width: `${gc.gcContent}%` }} />
                   </div>
-
-                  {/* Reference Sequence (Optional) */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
-                      Reference Sequence (Optional - for mutation analysis)
-                    </label>
-                    <textarea
-                      value={referenceSequence}
-                      onChange={(e) => setReferenceSequence(e.target.value)}
-                      placeholder="Enter reference sequence for comparison..."
-                      className="w-full h-24 px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
-                    />
-                  </div>
-
-                  {/* Question Input */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
-                      Your Question
-                    </label>
-                    <textarea
-                      value={question}
-                      onChange={(e) => setQuestion(e.target.value)}
-                      placeholder="What would you like to know about this sequence? (e.g., 'Is this sequence suitable for protein expression?', 'What mutations are present compared to the reference?')"
-                      className="w-full h-24 px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    />
-                  </div>
-
-                  {/* Submit Button */}
-                  <button
-                    onClick={performAnalysis}
-                    disabled={loading}
-                    className="w-full flex items-center justify-center space-x-2 px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg hover:from-blue-600 hover:to-purple-700 transition-all duration-200 transform hover:scale-105 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {loading ? (
-                      <>
-                        <Loader2 className="h-5 w-5 animate-spin" />
-                        <span>Analyzing...</span>
-                      </>
-                    ) : (
-                      <>
-                        <MessageSquare className="h-5 w-5" />
-                        <span>Get AI Analysis</span>
-                      </>
-                    )}
-                  </button>
+                  <p className="text-white/70 text-sm mt-2">
+                    GC content reflects stability and potential secondary structure; higher GC often increases melting temperature.
+                  </p>
                 </div>
               </div>
+            )}
 
-              {/* Analysis Results */}
-              {currentAnalysis && (
-                <div className="bg-white/10 backdrop-blur-sm rounded-2xl border border-white/20 p-6">
-                  <h2 className="text-xl font-semibold text-white mb-6 flex items-center">
-                    <CheckCircle className="h-5 w-5 mr-2 text-green-400" />
-                    Analysis Results
-                  </h2>
-                  {renderAnalysisResults(currentAnalysis)}
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeTab === 'history' && (
-            <div className="bg-white/10 backdrop-blur-sm rounded-2xl border border-white/20 p-6">
-              <h2 className="text-xl font-semibold text-white mb-6 flex items-center">
-                <History className="h-5 w-5 mr-2" />
-                Consultation History
-              </h2>
-              
-              {consultations.length === 0 ? (
-                <div className="text-center py-8">
-                  <MessageSquare className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-                  <p className="text-gray-300">No consultations yet</p>
-                  <p className="text-gray-400 text-sm">Start your first analysis to see results here</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {consultations.map((consultation) => (
-                    <div key={consultation.id} className="bg-white/5 rounded-lg p-4 border border-white/10">
-                      <div className="flex justify-between items-start mb-2">
-                        <div className="flex items-center space-x-2">
-                          <span className="px-2 py-1 bg-blue-500/20 text-blue-300 rounded text-xs font-medium">
-                            {consultation.sequenceType.toUpperCase()}
-                          </span>
-                          <span className="text-gray-400 text-sm">
-                            {consultation.createdAt.toLocaleDateString()}
-                          </span>
-                        </div>
+            {seqType === 'protein' && proteinSummary && (
+              <div className="space-y-2">
+                {proteinSummary.top.map(([aa, count]) => {
+                  const p = percent(count as number, proteinSummary.total)
+                  return (
+                    <div key={aa}>
+                      <div className="flex justify-between text-sm text-white/80">
+                        <span>{aa}</span>
+                        <span>{count as number} ({p}%)</span>
                       </div>
-                      
-                      <div className="mb-3">
-                        <p className="text-white font-medium mb-1">Question:</p>
-                        <p className="text-gray-300 text-sm">{consultation.question}</p>
+                      <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                        <div className="h-full bg-gradient-to-r from-blue-500 to-purple-600" style={{ width: `${p}%` }} />
                       </div>
-                      
-                      <div className="mb-3">
-                        <p className="text-white font-medium mb-1">Sequence:</p>
-                        <p className="text-gray-300 text-xs font-mono bg-black/20 p-2 rounded truncate">
-                          {consultation.sequence}
-                        </p>
-                      </div>
-                      
-                      {consultation.aiInsights.length > 0 && (
-                        <div>
-                          <p className="text-white font-medium mb-1">AI Insights:</p>
-                          <ul className="text-gray-300 text-sm space-y-1">
-                            {consultation.aiInsights.slice(0, 3).map((insight, index) => (
-                              <li key={index} className="flex items-start">
-                                <span className="text-blue-400 mr-2">•</span>
-                                {insight}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                  )
+                })}
+                <div className="mt-3 text-white/80">Average hydropathy: <span className="font-semibold text-white">{proteinSummary.avgHydro}</span></div>
+                <p className="text-white/70 text-sm">Hydropathy &gt; 1 suggests hydrophobic (possible membrane) character; &lt; 0 suggests hydrophilic.</p>
+              </div>
+            )}
+          </section>
+
+          {/* Codon usage (DNA/RNA) */}
+          {seqType !== 'protein' && codon && (
+            <section className="rounded-2xl border border-white/20 bg-white/10 backdrop-blur-md p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <ListChecks className="h-5 w-5 text-yellow-300" />
+                <h2 className="text-lg font-semibold">Codon Usage (Top 5)</h2>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                {codon.mostFrequent.map((c) => (
+                  <div key={c} className="p-3 rounded-xl bg-white/5 border border-white/10 text-center">
+                    <div className="font-semibold">{c}</div>
+                    <div className="text-sm text-white/80">{codon.codons[c]} times</div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-white/70 text-sm mt-3">
+                Codon preferences can hint at expression efficiency and organismal bias.
+              </p>
+            </section>
           )}
-        </motion.div>
-      </div>
+
+          {/* ORFs (DNA/RNA) */}
+          {seqType !== 'protein' && orfs.length > 0 && (
+            <section className="rounded-2xl border border-white/20 bg-white/10 backdrop-blur-md p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <Beaker className="h-5 w-5 text-emerald-300" />
+                <h2 className="text-lg font-semibold">Top ORFs</h2>
+              </div>
+              <div className="space-y-3">
+                {orfs.map((o, idx) => {
+                  const aaLen = o.protein.length
+                  const p = Math.min(100, Math.round((aaLen / Math.max(1, length / 3)) * 100))
+                  return (
+                    <div key={`${o.start}-${idx}`} className="p-3 rounded-xl bg-white/5 border border-white/10">
+                      <div className="flex items-center justify-between text-sm text-white/80">
+                        <div>Frame: <span className="text-white font-medium">{o.frame}</span></div>
+                        <div>Start: {o.start} • End: {o.end} • AA length: <span className="text-white font-medium">{aaLen}</span></div>
+                      </div>
+                      <div className="mt-2 h-2 bg-white/10 rounded-full overflow-hidden">
+                        <div className="h-full bg-gradient-to-r from-fuchsia-400 to-fuchsia-600" style={{ width: `${p}%` }} />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+              <p className="text-white/70 text-sm mt-3">ORFs indicate potential protein-coding regions bounded by start/stop codons.</p>
+            </section>
+          )}
+
+          {/* Translation summary (DNA/RNA) */}
+          {seqType !== 'protein' && translation && (
+            <section className="rounded-2xl border border-white/20 bg-white/10 backdrop-blur-md p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <Beaker className="h-5 w-5 text-pink-300" />
+                <h2 className="text-lg font-semibold">Translation (Frame 1)</h2>
+              </div>
+              <div className="text-white/80 mb-2">
+                Protein length: <span className="font-semibold text-white">{translation.length}</span> • 
+                MW (approx): <span className="font-semibold text-white">{translation.molecularWeight} Da</span> • 
+                pI (approx): <span className="font-semibold text-white">{translation.isoelectricPoint}</span> • 
+                Hydropathy: <span className="font-semibold text-white">{translation.hydropathy}</span>
+              </div>
+              <div className="p-3 rounded-xl bg-white/5 border border-white/10 font-mono text-sm break-all">
+                {translation.protein.slice(0, 120)}{translation.protein.length > 120 ? '…' : ''}
+              </div>
+              <p className="text-white/70 text-sm mt-3">
+                This is a naive in-frame translation; ORFs above suggest coding segments with proper start/stop.
+              </p>
+            </section>
+          )}
+
+          {/* Chatbot */}
+          <SpecialistChatbot
+            seqType={seqType}
+            clean={clean}
+            gc={gc}
+            codon={codon}
+            translation={translation}
+            orfs={orfs}
+            proteinSummary={proteinSummary}
+          />
+        </div>
+      )}
     </div>
   )
 }

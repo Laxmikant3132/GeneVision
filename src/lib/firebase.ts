@@ -2,14 +2,12 @@ import { initializeApp } from 'firebase/app'
 import { getAuth } from 'firebase/auth'
 import { getFirestore } from 'firebase/firestore'
 import { getStorage } from 'firebase/storage'
-import { getDatabase } from 'firebase/database'
 
 // Firebase configuration
 // Note: Replace these with your actual Firebase config values
 const firebaseConfig = {
   apiKey: "AIzaSyB502ULBhv7VqK4T8_Xn86ZxveUpiq3hms",
   authDomain: "genevision-app.firebaseapp.com",
-  databaseURL: "https://genevision-app-default-rtdb.firebaseio.com",
   projectId: "genevision-app",
   storageBucket: "genevision-app.firebasestorage.app",
   messagingSenderId: "3352107010",
@@ -24,6 +22,5 @@ const app = initializeApp(firebaseConfig)
 export const auth = getAuth(app)
 export const db = getFirestore(app)
 export const storage = getStorage(app)
-export const realtimeDb = getDatabase(app)
 
 export default app

@@ -37,14 +37,6 @@ export interface MutationAnalysis {
   }>
   totalMutations: number
   mutationRate: number
-  similarity: number
-  substitutions: Array<any>
-}
-
-export interface ValidationResult {
-  isValid: boolean
-  errors: string[]
-  warnings: string[]
 }
 
 // Genetic code table
@@ -91,7 +83,20 @@ const AMINO_ACID_PROPERTIES: { [key: string]: { mw: number, pI: number, hydropat
   'V': { mw: 117.1, pI: 6.0, hydropathy: 4.2 }
 }
 
-
+export const validateSequence = (sequence: string, type: 'dna' | 'rna' | 'protein'): boolean => {
+  const cleanSeq = sequence.replace(/\s/g, '').toUpperCase()
+  
+  switch (type) {
+    case 'dna':
+      return /^[ATGC]+$/.test(cleanSeq)
+    case 'rna':
+      return /^[AUGC]+$/.test(cleanSeq)
+    case 'protein':
+      return /^[ACDEFGHIKLMNPQRSTVWY*]+$/.test(cleanSeq)
+    default:
+      return false
+  }
+}
 
 export const cleanSequence = (sequence: string): string => {
   return sequence.replace(/[^A-Za-z]/g, '').toUpperCase()
@@ -368,9 +373,7 @@ export const compareMutations = (original: string, mutated: string): MutationAna
   return {
     mutations,
     totalMutations: mutations.length,
-    mutationRate: (mutations.length / maxLength) * 100,
-    similarity: ((maxLength - mutations.length) / maxLength) * 100,
-    substitutions: mutations
+    mutationRate: (mutations.length / maxLength) * 100
   }
 }
 
@@ -421,77 +424,3 @@ export const generateAIInsights = (analysisType: string, result: any): string[] 
   
   return insights
 }
-
-// Amino acid molecular weights (Da)
-const AMINO_ACID_WEIGHTS: { [key: string]: number } = {
-  'A': 89.09, 'R': 174.20, 'N': 132.12, 'D': 133.10, 'C': 121.15,
-  'E': 147.13, 'Q': 146.15, 'G': 75.07, 'H': 155.16, 'I': 131.17,
-  'L': 131.17, 'K': 146.19, 'M': 149.21, 'F': 165.19, 'P': 115.13,
-  'S': 105.09, 'T': 119.12, 'W': 204.23, 'Y': 181.19, 'V': 117.15
-}
-
-// Amino acid pKa values for isoelectric point calculation
-const AMINO_ACID_PKA: { [key: string]: { [key: string]: number } } = {
-  'D': { 'side': 3.9 }, 'E': { 'side': 4.3 }, 'H': { 'side': 6.0 },
-  'C': { 'side': 8.3 }, 'Y': { 'side': 10.1 }, 'K': { 'side': 10.5 },
-  'R': { 'side': 12.5 }
-}
-
-export const calculateMolecularWeight = (sequence: string): number => {
-  let weight = 0
-  for (const aa of sequence.toUpperCase()) {
-    weight += AMINO_ACID_WEIGHTS[aa] || 0
-  }
-  // Subtract water molecules for peptide bonds
-  weight -= (sequence.length - 1) * 18.015
-  return weight
-}
-
-export const calculateIsoelectricPoint = (sequence: string): number => {
-  // Simplified pI calculation
-  let positiveCharges = 0
-  let negativeCharges = 0
-  
-  for (const aa of sequence.toUpperCase()) {
-    if (['K', 'R', 'H'].includes(aa)) positiveCharges++
-    if (['D', 'E'].includes(aa)) negativeCharges++
-  }
-  
-  // Add terminal charges
-  positiveCharges += 1 // N-terminus
-  negativeCharges += 1 // C-terminus
-  
-  // Simplified calculation
-  return 7 + (positiveCharges - negativeCharges) * 0.5
-}
-
-export const validateSequence = (sequence: string, type: 'dna' | 'rna' | 'protein'): ValidationResult => {
-  const errors: string[] = []
-  const warnings: string[] = []
-  
-  if (!sequence || sequence.length === 0) {
-    errors.push('Sequence is empty')
-    return { isValid: false, errors, warnings }
-  }
-  
-  const validChars = {
-    dna: /^[ATGCNRYSWKMBDHV]+$/i,
-    rna: /^[AUGCNRYSWKMBDHV]+$/i,
-    protein: /^[ACDEFGHIKLMNPQRSTVWY*X]+$/i
-  }
-  
-  if (!validChars[type].test(sequence)) {
-    errors.push(`Invalid characters for ${type} sequence`)
-  }
-  
-  if (sequence.length < 3) {
-    warnings.push('Sequence is very short')
-  }
-  
-  return {
-    isValid: errors.length === 0,
-    errors,
-    warnings
-  }
-}
-
